@@ -48,4 +48,8 @@ desktop.ini
 .turbo/
 .vercel/
 
+# Project overview files
 project overview
+project overview.*
+project-overview.*
+project_overview.*
