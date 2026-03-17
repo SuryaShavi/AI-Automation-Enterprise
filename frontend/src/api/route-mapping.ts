@@ -32,7 +32,7 @@ export const frontendRouteMapping = {
     transport: 'polling every 30s, SSE recommended for future badge updates',
   },
   '/workflow-automation': {
-    apis: ['GET /workflows', 'POST /workflows', 'PATCH /workflows/{id}/status', 'GET /workflows/{id}/executions'],
+    apis: ['GET /workflows', 'POST /workflows', 'PATCH /workflows/{id}/status', 'DELETE /workflows/{id}', 'GET /workflows/{id}/executions'],
     transport: 'request-response with manual refresh for execution history',
   },
   '/integrations': {

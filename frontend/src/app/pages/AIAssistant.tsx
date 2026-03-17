@@ -1,37 +1,25 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Send, Paperclip, Bot, User } from "lucide-react";
+import { apiClient } from "../../api/client";
+import { endpoints } from "../../api/endpoints";
+import type { AttachmentReceipt, ChatMessage, ChatReply, ChatSummary } from "../../api/contracts";
 
-interface Message {
-  id: number;
-  sender: "user" | "ai";
-  content: string;
-  time: string;
+function createLocalChatId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `chat-${crypto.randomUUID()}`;
+  }
+  return `chat-${Date.now()}`;
 }
 
 export default function AIAssistant() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 1,
-      sender: "ai",
-      content: "Hello! I'm your AI assistant. I can help you with tasks, summarize emails, generate reports, and answer questions about your documents. How can I assist you today?",
-      time: "10:00 AM",
-    },
-    {
-      id: 2,
-      sender: "user",
-      content: "What tasks are pending for today?",
-      time: "10:01 AM",
-    },
-    {
-      id: 3,
-      sender: "ai",
-      content: "You have 5 pending tasks for today:\n\n1. Review Q1 financial report (High Priority)\n2. Approve marketing budget proposal\n3. Schedule team meeting for project kickoff\n4. Review and respond to client emails\n5. Update project documentation\n\nWould you like me to provide more details on any of these tasks?",
-      time: "10:01 AM",
-    },
-  ]);
-
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string>(createLocalChatId());
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const suggestedPrompts = [
     "What tasks are pending?",
@@ -40,57 +28,137 @@ export default function AIAssistant() {
     "Explain HR policy",
   ];
 
-  const chatHistory = [
-    "New conversation",
-    "Weekly report discussion",
-    "Email automation setup",
-    "Document analysis",
-    "Task management help",
-  ];
+  useEffect(() => {
+    let active = true;
 
-  const handleSend = () => {
-    if (!inputMessage.trim()) return;
+    async function loadChats() {
+      try {
+        const envelope = await apiClient.request<ChatSummary[]>(endpoints.ai.chats);
+        if (!active) {
+          return;
+        }
+        setChats(envelope.data);
+      } catch (loadError) {
+        if (active) {
+          setError(loadError instanceof Error ? loadError.message : "Failed to load chat history");
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
 
-    const newMessage: Message = {
-      id: messages.length + 1,
-      sender: "user",
+    void loadChats();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function loadMessages(chatId: string) {
+    try {
+      setError(null);
+      const envelope = await apiClient.request<ChatMessage[]>(endpoints.ai.messages(chatId));
+      setActiveChatId(chatId);
+      setMessages(envelope.data);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load messages");
+    }
+  }
+
+  function handleNewChat() {
+    const newChatId = createLocalChatId();
+    setActiveChatId(newChatId);
+    setMessages([]);
+  }
+
+  async function handleSend() {
+    if (!inputMessage.trim()) {
+      return;
+    }
+
+    setSending(true);
+    setError(null);
+
+    const optimistic: ChatMessage = {
+      id: `local-${Date.now()}`,
+      role: "user",
       content: inputMessage,
-      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      createdAt: new Date().toISOString(),
     };
 
-    setMessages([...messages, newMessage]);
+    setMessages((previous) => [...previous, optimistic]);
+    const prompt = inputMessage;
     setInputMessage("");
-    setIsTyping(true);
 
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: messages.length + 2,
-        sender: "ai",
-        content: "I understand your request. Let me process that for you...",
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      };
-      setMessages((prev) => [...prev, aiResponse]);
-      setIsTyping(false);
-    }, 1000);
-  };
+    try {
+      const envelope = await apiClient.request<ChatReply>(endpoints.ai.chat, {
+        method: "POST",
+        body: {
+          chatId: activeChatId,
+          prompt,
+          mode: "general",
+          attachments: [],
+        },
+      });
+
+      setActiveChatId(envelope.data.chatId);
+      setMessages((previous) => [...previous.filter((message) => message.id !== optimistic.id), optimistic, envelope.data.message]);
+
+      const chatsEnvelope = await apiClient.request<ChatSummary[]>(endpoints.ai.chats);
+      setChats(chatsEnvelope.data);
+    } catch (sendError) {
+      setMessages((previous) => previous.filter((message) => message.id !== optimistic.id));
+      setError(sendError instanceof Error ? sendError.message : "Failed to send chat prompt");
+      setInputMessage(prompt);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleAttachment(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !activeChatId) {
+      return;
+    }
+
+    try {
+      await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(activeChatId), {
+        method: "POST",
+        body: {
+          fileName: file.name,
+          contentType: file.type || "application/octet-stream",
+          size: file.size,
+          metadata: { source: "ui" },
+        },
+      });
+    } catch (attachError) {
+      setError(attachError instanceof Error ? attachError.message : "Failed to upload attachment");
+    } finally {
+      event.target.value = "";
+    }
+  }
 
   return (
     <div className="h-[calc(100vh-8rem)] flex gap-6">
       <div className="w-64 bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-        <button className="w-full bg-indigo-600 text-white py-2 rounded-lg mb-4 hover:bg-indigo-700 transition-colors">
+        <button onClick={handleNewChat} className="w-full bg-indigo-600 text-white py-2 rounded-lg mb-4 hover:bg-indigo-700 transition-colors">
           + New Chat
         </button>
         <h3 className="text-sm font-semibold text-gray-700 mb-3">Chat History</h3>
         <div className="space-y-2">
-          {chatHistory.map((chat, index) => (
-            <div
-              key={index}
-              className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                index === 0 ? "bg-indigo-50 text-indigo-700" : "hover:bg-gray-50 text-gray-700"
+          {loading && <p className="text-xs text-gray-500">Loading chats...</p>}
+          {chats.map((chat) => (
+            <button
+              key={chat.id}
+              onClick={() => void loadMessages(chat.id)}
+              className={`w-full text-left p-3 rounded-lg cursor-pointer transition-colors ${
+                chat.id === activeChatId ? "bg-indigo-50 text-indigo-700" : "hover:bg-gray-50 text-gray-700"
               }`}
             >
-              <p className="text-sm">{chat}</p>
-            </div>
+              <p className="text-sm truncate">{chat.title}</p>
+            </button>
           ))}
         </div>
       </div>
@@ -99,32 +167,24 @@ export default function AIAssistant() {
         <div className="p-6 border-b border-gray-200">
           <h1 className="text-2xl font-bold text-gray-800">AI Assistant</h1>
           <p className="text-gray-600">Ask me anything about your work</p>
+          {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex gap-3 ${message.sender === "user" ? "justify-end" : "justify-start"}`}
-            >
-              {message.sender === "ai" && (
+            <div key={message.id} className={`flex gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+              {message.role === "assistant" && (
                 <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
                   <Bot size={18} className="text-white" />
                 </div>
               )}
-              <div
-                className={`max-w-2xl ${
-                  message.sender === "user"
-                    ? "bg-indigo-600 text-white"
-                    : "bg-gray-100 text-gray-800"
-                } rounded-2xl px-4 py-3`}
-              >
+              <div className={`max-w-2xl ${message.role === "user" ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-800"} rounded-2xl px-4 py-3`}>
                 <p className="whitespace-pre-wrap">{message.content}</p>
-                <p className={`text-xs mt-1 ${message.sender === "user" ? "text-indigo-200" : "text-gray-500"}`}>
-                  {message.time}
+                <p className={`text-xs mt-1 ${message.role === "user" ? "text-indigo-200" : "text-gray-500"}`}>
+                  {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </p>
               </div>
-              {message.sender === "user" && (
+              {message.role === "user" && (
                 <div className="w-8 h-8 bg-gray-600 rounded-full flex items-center justify-center flex-shrink-0">
                   <User size={18} className="text-white" />
                 </div>
@@ -132,7 +192,7 @@ export default function AIAssistant() {
             </div>
           ))}
 
-          {isTyping && (
+          {sending && (
             <div className="flex gap-3">
               <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center">
                 <Bot size={18} className="text-white" />
@@ -152,12 +212,8 @@ export default function AIAssistant() {
           <div className="mb-3">
             <p className="text-sm text-gray-600 mb-2">Suggested prompts:</p>
             <div className="flex flex-wrap gap-2">
-              {suggestedPrompts.map((prompt, index) => (
-                <button
-                  key={index}
-                  onClick={() => setInputMessage(prompt)}
-                  className="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-sm text-gray-700 transition-colors"
-                >
+              {suggestedPrompts.map((prompt) => (
+                <button key={prompt} onClick={() => setInputMessage(prompt)} className="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-sm text-gray-700 transition-colors">
                   {prompt}
                 </button>
               ))}
@@ -165,21 +221,24 @@ export default function AIAssistant() {
           </div>
 
           <div className="flex gap-2">
-            <button className="p-3 hover:bg-gray-100 rounded-lg transition-colors">
+            <input ref={attachmentInputRef} type="file" className="hidden" onChange={(event) => void handleAttachment(event)} />
+            <button onClick={() => attachmentInputRef.current?.click()} className="p-3 hover:bg-gray-100 rounded-lg transition-colors">
               <Paperclip size={20} className="text-gray-600" />
             </button>
             <input
               type="text"
               value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && handleSend()}
+              onChange={(event) => setInputMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleSend();
+                }
+              }}
               placeholder="Type your message..."
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
-            <button
-              onClick={handleSend}
-              className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-            >
+            <button onClick={() => void handleSend()} disabled={sending} className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
               <Send size={20} />
             </button>
           </div>

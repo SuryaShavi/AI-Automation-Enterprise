@@ -57,6 +57,7 @@ export const endpoints = {
   workflows: {
     list: '/workflows',
     create: '/workflows',
+    remove: (id: string) => `/workflows/${id}`,
     status: (id: string) => `/workflows/${id}/status`,
     executions: (id: string) => `/workflows/${id}/executions`,
   },

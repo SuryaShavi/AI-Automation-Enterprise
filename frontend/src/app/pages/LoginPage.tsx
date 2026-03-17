@@ -114,9 +114,14 @@ export default function LoginPage() {
                 />
                 <span className="text-sm text-gray-600">Remember me</span>
               </label>
-              <a href="#" className="text-sm text-indigo-600 hover:text-indigo-700">
+              <button
+                type="button"
+                disabled
+                title="Not yet available"
+                className="text-sm text-indigo-400 cursor-not-allowed"
+              >
                 Forgot password?
-              </a>
+              </button>
             </div>
 
             <button
@@ -131,9 +136,14 @@ export default function LoginPage() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Don't have an account?{" "}
-              <a href="#" className="text-indigo-600 hover:text-indigo-700 font-medium">
+              <button
+                type="button"
+                disabled
+                title="Not yet available"
+                className="text-indigo-400 font-medium cursor-not-allowed"
+              >
                 Sign up
-              </a>
+              </button>
             </p>
           </div>
         </div>

@@ -155,6 +155,14 @@ export interface ChatReply {
   guardrails: string[];
 }
 
+export interface AttachmentReceipt {
+  chatId: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  status: string;
+}
+
 export interface ReportAnalyticsPoint {
   [key: string]: string | number;
 }
@@ -173,9 +181,33 @@ export interface WorkflowItem {
   createdAt: string;
 }
 
+export interface WorkflowExecutionItem {
+  executionId: string;
+  status: string;
+  startedAt: string;
+  durationMs: number;
+}
+
 export interface IntegrationItem {
   provider: string;
   status: string;
   authType: string;
   connectedAt: string | null;
+}
+
+export interface EmailStats {
+  emailsProcessed: number;
+  tasksDetected: number;
+  pendingReview: number;
+}
+
+export interface ExtractedTask {
+  id: string;
+  title: string;
+  confidence: number;
+}
+
+export interface ExtractTaskResponse {
+  emailId: string;
+  tasks: ExtractedTask[];
 }

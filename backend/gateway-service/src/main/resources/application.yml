@@ -27,6 +27,10 @@ spring:
           uri: http://localhost:8081
           predicates:
             - Path=/auth/**
+        - id: user-service
+          uri: http://localhost:8081
+          predicates:
+            - Path=/users/**
         - id: task-service
           uri: http://localhost:8082
           predicates:
@@ -34,7 +38,7 @@ spring:
         - id: email-service
           uri: http://localhost:8083
           predicates:
-            - Path=/email/**
+            - Path=/emails/**
         - id: ai-agent-service
           uri: http://localhost:8084
           predicates:
@@ -47,6 +51,14 @@ spring:
           uri: http://localhost:8086
           predicates:
             - Path=/reports/**
+        - id: dashboard-service
+          uri: http://localhost:8086
+          predicates:
+            - Path=/dashboard/**
+        - id: health-service
+          uri: http://localhost:8086
+          predicates:
+            - Path=/health/**
         - id: notification-service
           uri: http://localhost:8087
           predicates:
@@ -54,7 +66,11 @@ spring:
         - id: workflow-service
           uri: http://localhost:8088
           predicates:
-            - Path=/workflow/**
+            - Path=/workflows/**
+        - id: integrations-service
+          uri: http://localhost:8088
+          predicates:
+            - Path=/integrations/**
 
 springdoc:
   swagger-ui:

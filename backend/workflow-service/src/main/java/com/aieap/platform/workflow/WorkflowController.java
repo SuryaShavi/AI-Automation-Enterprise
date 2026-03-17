@@ -13,6 +13,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -57,10 +58,21 @@ public class WorkflowController {
 
     @PatchMapping("/workflows/{id}/status")
     public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable String id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, HttpServletRequest request) {
+        String nextStatus = workflowStatusRequest.status().toUpperCase();
+        if (!"ACTIVE".equals(nextStatus) && !"PAUSED".equals(nextStatus)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be ACTIVE or PAUSED");
+        }
         WorkflowItem workflow = workflow(id);
-        WorkflowItem updated = new WorkflowItem(workflow.id(), workflow.name(), workflowStatusRequest.status(), workflow.steps(), workflow.createdAt());
+        WorkflowItem updated = new WorkflowItem(workflow.id(), workflow.name(), nextStatus, workflow.steps(), workflow.createdAt());
         workflows.put(id, updated);
         return ResponseFactory.success(request, updated);
+    }
+
+    @DeleteMapping("/workflows/{id}")
+    public ApiEnvelope<Map<String, String>> delete(@PathVariable String id, HttpServletRequest request) {
+        workflow(id);
+        workflows.remove(id);
+        return ResponseFactory.success(request, Map.of("status", "deleted", "id", id));
     }
 
     @GetMapping("/workflows/{id}/executions")
