@@ -1,7 +1,0 @@
-com\aieap\platform\common\ResponseFactory.class
-com\aieap\platform\common\ApiEnvelope.class
-com\aieap\platform\common\PageEnvelope.class
-com\aieap\platform\common\ApiError.class
-com\aieap\platform\common\GlobalExceptionHandler.class
-com\aieap\platform\common\PlatformEvents.class
-com\aieap\platform\common\CorrelationIdFilter.class

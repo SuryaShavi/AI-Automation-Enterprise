@@ -1,6 +1,0 @@
-com\aieap\platform\workflow\WorkflowController$WorkflowItem.class
-com\aieap\platform\workflow\WorkflowController$CreateWorkflowRequest.class
-com\aieap\platform\workflow\WorkflowController.class
-com\aieap\platform\workflow\WorkflowController$WorkflowStatusRequest.class
-com\aieap\platform\workflow\WorkflowController$IntegrationItem.class
-com\aieap\platform\workflow\WorkflowServiceApplication.class
