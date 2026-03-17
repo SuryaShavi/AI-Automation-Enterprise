@@ -77,3 +77,19 @@ IMPLEMENTATION_GUIDE.*
 INTEGRATION_REVIEW.*
 README.*
 ATTRIBUTIONS.*
+
+# Maven build folders
+target/
+
+# Compiled Java files
+*.class
+
+# Jar files
+*.jar
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
