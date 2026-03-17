@@ -1,0 +1,9 @@
+com\aieap\platform\ai\AiController$ChatReply.class
+com\aieap\platform\ai\AiController$ChatSummary.class
+com\aieap\platform\ai\AiController$AttachmentRequest.class
+com\aieap\platform\ai\AiController$ChatMessage.class
+com\aieap\platform\ai\AiController$ChatRequest.class
+com\aieap\platform\ai\AiController.class
+com\aieap\platform\ai\AiAgentServiceApplication.class
+com\aieap\platform\ai\AiController$AttachmentReceipt.class
+com\aieap\platform\ai\AiController$ChatConversation.class

@@ -1,0 +1,6 @@
+com\aieap\platform\email\EmailController$ExtractTaskResponse.class
+com\aieap\platform\email\EmailController$IngestEmailRequest.class
+com\aieap\platform\email\EmailController$EmailItem.class
+com\aieap\platform\email\EmailController$ExtractedTask.class
+com\aieap\platform\email\EmailServiceApplication.class
+com\aieap\platform\email\EmailController.class

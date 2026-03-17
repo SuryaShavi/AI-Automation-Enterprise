@@ -1,0 +1,23 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: auth-service
+
+security:
+  jwt:
+    issuer: aieap-auth-service
+    secret: ChangeThisSecretForLocalDev1234567890!
+    access-token-ttl-minutes: 15
+    refresh-token-ttl-days: 14
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

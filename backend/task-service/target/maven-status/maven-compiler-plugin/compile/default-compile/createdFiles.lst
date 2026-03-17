@@ -1,0 +1,7 @@
+com\aieap\platform\task\TaskController$BoardColumn.class
+com\aieap\platform\task\TaskController$TaskBoardResponse.class
+com\aieap\platform\task\TaskController$TaskItem.class
+com\aieap\platform\task\TaskController$CreateTaskRequest.class
+com\aieap\platform\task\TaskServiceApplication.class
+com\aieap\platform\task\TaskController$UpdateTaskRequest.class
+com\aieap\platform\task\TaskController.class
