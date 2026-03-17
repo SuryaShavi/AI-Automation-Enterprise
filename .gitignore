@@ -5,6 +5,17 @@ node_modules/
 dist/
 build/
 .vite/
+target/
+**/target/
+
+# Java and JVM artifacts
+*.class
+*.jar
+*.war
+*.ear
+*.jpi
+hs_err_pid*
+replay_pid*
 
 # Test and coverage
 coverage/
@@ -29,6 +40,7 @@ pnpm-debug.log*
 *.tsbuildinfo
 tmp/
 temp/
+*.tmp
 
 # IDE and editor files
 .vscode/
@@ -48,7 +60,14 @@ desktop.ini
 .turbo/
 .vercel/
 
-# Project overview files
+# Runtime and local database artifacts
+*.pid
+*.seed
+*.pid.lock
+*.sqlite
+*.sqlite3
+
+# Project overview and documentation files
 project overview
 project overview.*
 project-overview.*
