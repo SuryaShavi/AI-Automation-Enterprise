@@ -6,7 +6,12 @@ import {
   type ReactNode,
 } from 'react';
 import { apiClient } from '../../api/client';
-import type { LoginRequest, LoginResponse, UserProfile } from '../../api/contracts';
+import type {
+  LoginRequest,
+  LoginResponse,
+  RegisterRequest,
+  UserProfile,
+} from '../../api/contracts';
 import { endpoints } from '../../api/endpoints';
 import { AUTH_STORAGE_KEYS } from '../../config/api';
 
@@ -15,6 +20,7 @@ interface SessionContextValue {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (credentials: LoginRequest) => Promise<void>;
+  register: (payload: RegisterRequest) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   setUser: (user: UserProfile | null) => void;
@@ -51,6 +57,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const envelope = await apiClient.request<LoginResponse>(endpoints.auth.login, {
       method: 'POST',
       body: credentials,
+      skipAuth: true,
+    });
+
+    localStorage.setItem(AUTH_STORAGE_KEYS.accessToken, envelope.data.accessToken);
+    localStorage.setItem(AUTH_STORAGE_KEYS.refreshToken, envelope.data.refreshToken);
+    setUser(envelope.data.user);
+  }
+
+  async function register(payload: RegisterRequest) {
+    const envelope = await apiClient.request<LoginResponse>(endpoints.auth.register, {
+      method: 'POST',
+      body: payload,
       skipAuth: true,
     });
 
@@ -104,6 +122,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         isLoading,
         isAuthenticated: user !== null,
         login,
+        register,
         logout,
         refreshUser,
         setUser,

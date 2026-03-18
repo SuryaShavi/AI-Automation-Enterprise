@@ -4,6 +4,14 @@ server:
 spring:
   application:
     name: auth-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/aieap
+    username: aieap
+    password: aieap
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 5000
+      initialization-fail-timeout: -1
 
 security:
   jwt:

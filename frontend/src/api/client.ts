@@ -42,7 +42,7 @@ export class ApiClient {
     const headers = new Headers(options.headers);
     const isFormData = options.body instanceof FormData;
 
-    if (options.body !== undefined && !isFormData && !isRawBody(options.body) && typeof options.body !== 'object' || options.body !== null) {
+    if (options.body !== undefined && !isFormData && !isRawBody(options.body) && options.body !== null) {
       headers.set('Content-Type', 'application/json');
     }
 
@@ -57,13 +57,13 @@ export class ApiClient {
       headers.set('Idempotency-Key', options.idempotencyKey);
     }
 
-const requestBody: BodyInit | null = options.body === undefined
+    const requestBody: BodyInit | null = options.body === undefined
       ? null
       : isRawBody(options.body)
-        ? options.body as BodyInit
+        ? (options.body as BodyInit)
         : isFormData
-          ? options.body as unknown as BodyInit
-          : JSON.stringify(options.body) as string;
+          ? (options.body as unknown as BodyInit)
+          : (JSON.stringify(options.body) as string);
 
     return fetch(`${API_BASE_URL}${path}`, {
       ...options,

@@ -138,9 +138,8 @@ export default function LoginPage() {
               Don't have an account?{" "}
               <button
                 type="button"
-                disabled
-                title="Not yet available"
-                className="text-indigo-400 font-medium cursor-not-allowed"
+                onClick={() => navigate('/signup')}
+                className="text-indigo-600 font-medium hover:text-indigo-700"
               >
                 Sign up
               </button>
