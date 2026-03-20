@@ -2,6 +2,8 @@ package com.aieap.platform.workflow;
 
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -10,8 +12,10 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,78 +32,140 @@ import org.springframework.web.server.ResponseStatusException;
 @Validated
 @Tag(name = "Workflows")
 public class WorkflowController {
-    private final ConcurrentHashMap<String, WorkflowItem> workflows = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, IntegrationItem> integrations = new ConcurrentHashMap<>();
+    private final ObjectMapper objectMapper;
 
-    public WorkflowController() {
-        workflows.put("workflow-1", new WorkflowItem("workflow-1", "Email to Task Automation", "ACTIVE", List.of("Email Received", "AI Task Extraction", "Task Created", "Notification Sent"), OffsetDateTime.now().minusDays(1)));
-        integrations.put("gmail", new IntegrationItem("gmail", "CONNECTED", "OAuth2", OffsetDateTime.now().minusDays(2)));
-        integrations.put("slack", new IntegrationItem("slack", "CONNECTED", "Webhook", OffsetDateTime.now().minusDays(3)));
-        integrations.put("google-drive", new IntegrationItem("google-drive", "DISCONNECTED", "OAuth2", null));
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
+
+    public WorkflowController(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
     }
 
     @GetMapping("/workflows")
     public ApiEnvelope<List<WorkflowItem>> list(HttpServletRequest request) {
-        return ResponseFactory.success(request, workflows.values().stream().toList());
+        return ResponseFactory.success(request, loadWorkflows());
     }
 
     @PostMapping("/workflows")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public ApiEnvelope<WorkflowItem> create(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody CreateWorkflowRequest createWorkflowRequest,
         HttpServletRequest request
     ) {
-        String id = idempotencyKey == null ? UUID.randomUUID().toString() : "workflow-" + idempotencyKey;
-        WorkflowItem workflow = new WorkflowItem(id, createWorkflowRequest.name(), "DRAFT", createWorkflowRequest.steps(), OffsetDateTime.now());
-        workflows.put(id, workflow);
-        return ResponseFactory.success(request, workflow);
+        JdbcTemplate db = requireJdbc();
+        String id = idempotencyKey == null
+            ? UUID.randomUUID().toString()
+            : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
+        List<String> steps = createWorkflowRequest.steps() == null ? List.of() : createWorkflowRequest.steps();
+        db.update(
+            "INSERT INTO aieap.workflows (id, name, status, created_at, updated_at) VALUES (?::uuid, ?, 'DRAFT', NOW(), NOW()) ON CONFLICT (id) DO NOTHING",
+            id,
+            createWorkflowRequest.name()
+        );
+        int idx = 0;
+        for (String step : steps) {
+            db.update(
+                "INSERT INTO aieap.workflow_steps (id, workflow_id, step_index, step_name, created_at) VALUES (?::uuid, ?::uuid, ?, ?, NOW())",
+                UUID.randomUUID().toString(),
+                id,
+                idx++,
+                step
+            );
+        }
+        return ResponseFactory.success(request, workflow(id));
     }
 
     @PatchMapping("/workflows/{id}/status")
+    @Transactional
     public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable String id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, HttpServletRequest request) {
         String nextStatus = workflowStatusRequest.status().toUpperCase();
         if (!"ACTIVE".equals(nextStatus) && !"PAUSED".equals(nextStatus)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be ACTIVE or PAUSED");
         }
-        WorkflowItem workflow = workflow(id);
-        WorkflowItem updated = new WorkflowItem(workflow.id(), workflow.name(), nextStatus, workflow.steps(), workflow.createdAt());
-        workflows.put(id, updated);
-        return ResponseFactory.success(request, updated);
+        JdbcTemplate db = requireJdbc();
+        int updated = db.update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", nextStatus, id);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
+        }
+        return ResponseFactory.success(request, workflow(id));
     }
 
     @DeleteMapping("/workflows/{id}")
+    @Transactional
     public ApiEnvelope<Map<String, String>> delete(@PathVariable String id, HttpServletRequest request) {
         workflow(id);
-        workflows.remove(id);
+        JdbcTemplate db = requireJdbc();
+        db.update("DELETE FROM aieap.workflows WHERE id = ?::uuid", id);
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", id));
     }
 
     @GetMapping("/workflows/{id}/executions")
     public ApiEnvelope<List<Map<String, Object>>> executions(@PathVariable String id, HttpServletRequest request) {
         workflow(id);
-        return ResponseFactory.success(request, List.of(
-            Map.of("executionId", "exec-1", "status", "SUCCEEDED", "startedAt", OffsetDateTime.now().minusMinutes(30).toString(), "durationMs", 812),
-            Map.of("executionId", "exec-2", "status", "SUCCEEDED", "startedAt", OffsetDateTime.now().minusHours(3).toString(), "durationMs", 923)
-        ));
+        JdbcTemplate db = requireJdbc();
+        List<Map<String, Object>> rows = db.query(
+            "SELECT id::text AS id, status, started_at, duration_ms FROM aieap.workflow_executions WHERE workflow_id = ?::uuid ORDER BY started_at DESC",
+            (rs, rowNum) -> Map.of(
+                "executionId", rs.getString("id"),
+                "status", rs.getString("status"),
+                "startedAt", String.valueOf(rs.getObject("started_at", OffsetDateTime.class)),
+                "durationMs", rs.getInt("duration_ms")
+            ),
+            id
+        );
+        return ResponseFactory.success(request, rows);
     }
 
     @GetMapping("/integrations")
     public ApiEnvelope<List<IntegrationItem>> listIntegrations(HttpServletRequest request) {
-        return ResponseFactory.success(request, integrations.values().stream().toList());
+        JdbcTemplate db = requireJdbc();
+        String userId = defaultUserId();
+        List<IntegrationItem> items = db.query(
+            "SELECT provider, status, auth_type, connected_at FROM aieap.integrations WHERE user_id = ?::uuid ORDER BY provider",
+            (rs, rowNum) -> new IntegrationItem(
+                rs.getString("provider"),
+                rs.getString("status"),
+                rs.getString("auth_type"),
+                rs.getObject("connected_at", OffsetDateTime.class)
+            ),
+            userId
+        );
+        return ResponseFactory.success(request, items);
     }
 
     @PostMapping("/integrations/{provider}/connect")
+    @Transactional
     public ApiEnvelope<IntegrationItem> connect(@PathVariable String provider, @RequestBody(required = false) Map<String, Object> payload, HttpServletRequest request) {
-        IntegrationItem updated = new IntegrationItem(provider, "CONNECTED", payload == null ? "OAuth2" : String.valueOf(payload.getOrDefault("authType", "OAuth2")), OffsetDateTime.now());
-        integrations.put(provider, updated);
+        JdbcTemplate db = requireJdbc();
+        String userId = defaultUserId();
+        String authType = payload == null ? "OAuth2" : String.valueOf(payload.getOrDefault("authType", "OAuth2"));
+        db.update(
+            "INSERT INTO aieap.integrations (id, user_id, provider, status, auth_type, config_json, connected_at, updated_at) " +
+            "VALUES (?::uuid, ?::uuid, ?, 'CONNECTED', ?, ?::jsonb, NOW(), NOW()) " +
+            "ON CONFLICT (user_id, provider) DO UPDATE SET status = 'CONNECTED', auth_type = EXCLUDED.auth_type, config_json = EXCLUDED.config_json, connected_at = NOW(), disconnected_at = NULL, updated_at = NOW()",
+            UUID.randomUUID().toString(),
+            userId,
+            provider,
+            authType,
+            toJson(payload == null ? Map.of() : payload)
+        );
+        IntegrationItem updated = integration(userId, provider);
         return ResponseFactory.success(request, updated);
     }
 
     @PostMapping("/integrations/{provider}/disconnect")
+    @Transactional
     public ApiEnvelope<IntegrationItem> disconnect(@PathVariable String provider, HttpServletRequest request) {
-        IntegrationItem updated = new IntegrationItem(provider, "DISCONNECTED", "OAuth2", null);
-        integrations.put(provider, updated);
+        JdbcTemplate db = requireJdbc();
+        String userId = defaultUserId();
+        db.update(
+            "UPDATE aieap.integrations SET status = 'DISCONNECTED', disconnected_at = NOW(), connected_at = NULL, updated_at = NOW() WHERE user_id = ?::uuid AND provider = ?",
+            userId,
+            provider
+        );
+        IntegrationItem updated = integration(userId, provider);
         return ResponseFactory.success(request, updated);
     }
 
@@ -109,11 +175,92 @@ public class WorkflowController {
     }
 
     private WorkflowItem workflow(String id) {
-        WorkflowItem workflow = workflows.get(id);
+        JdbcTemplate db = requireJdbc();
+        List<WorkflowItem> rows = db.query(
+            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE id = ?::uuid",
+            (rs, rowNum) -> new WorkflowItem(
+                rs.getString("id"),
+                rs.getString("name"),
+                rs.getString("status"),
+                loadWorkflowSteps(rs.getString("id")),
+                rs.getObject("created_at", OffsetDateTime.class)
+            ),
+            id
+        );
+        WorkflowItem workflow = rows.isEmpty() ? null : rows.getFirst();
         if (workflow == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
         }
         return workflow;
+    }
+
+    private List<WorkflowItem> loadWorkflows() {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows ORDER BY created_at DESC",
+            (rs, rowNum) -> new WorkflowItem(
+                rs.getString("id"),
+                rs.getString("name"),
+                rs.getString("status"),
+                loadWorkflowSteps(rs.getString("id")),
+                rs.getObject("created_at", OffsetDateTime.class)
+            )
+        );
+    }
+
+    private List<String> loadWorkflowSteps(String workflowId) {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT step_name FROM aieap.workflow_steps WHERE workflow_id = ?::uuid ORDER BY step_index",
+            (rs, rowNum) -> rs.getString("step_name"),
+            workflowId
+        );
+    }
+
+    private IntegrationItem integration(String userId, String provider) {
+        JdbcTemplate db = requireJdbc();
+        List<IntegrationItem> rows = db.query(
+            "SELECT provider, status, auth_type, connected_at FROM aieap.integrations WHERE user_id = ?::uuid AND provider = ?",
+            (rs, rowNum) -> new IntegrationItem(
+                rs.getString("provider"),
+                rs.getString("status"),
+                rs.getString("auth_type"),
+                rs.getObject("connected_at", OffsetDateTime.class)
+            ),
+            userId,
+            provider
+        );
+        if (rows.isEmpty()) {
+            return new IntegrationItem(provider, "DISCONNECTED", "OAuth2", null);
+        }
+        return rows.getFirst();
+    }
+
+    private String defaultUserId() {
+        JdbcTemplate db = requireJdbc();
+        String userId = db.query(
+            "SELECT id::text AS id FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
+            rs -> rs.next() ? rs.getString("id") : null
+        );
+        if (userId == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "No active user available for workflow integrations");
+        }
+        return userId;
+    }
+
+    private String toJson(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload == null ? Map.of() : payload);
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to encode integration payload", ex);
+        }
+    }
+
+    private JdbcTemplate requireJdbc() {
+        if (jdbcTemplate == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
+        }
+        return jdbcTemplate;
     }
 
     public record WorkflowItem(String id, String name, String status, List<String> steps, OffsetDateTime createdAt) {

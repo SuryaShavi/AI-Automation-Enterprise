@@ -8,12 +8,15 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,12 +34,8 @@ import org.springframework.web.server.ResponseStatusException;
 @Tag(name = "Emails")
 @RequestMapping("/emails")
 public class EmailController {
-    private final ConcurrentHashMap<String, EmailItem> emails = new ConcurrentHashMap<>();
-
-    public EmailController() {
-        register(new EmailItem("email-101", "Sarah Johnson", "sarah.j@client.com", "Q1 budget review required", "Review Q1 budget and schedule a meeting.", List.of("Review Q1 budget", "Schedule stakeholder meeting"), "PENDING", "HIGH", OffsetDateTime.now().minusHours(2)));
-        register(new EmailItem("email-102", "Mike Chen", "mike.chen@company.com", "Project deadline update", "Deadline moved to next Friday. Team must be notified.", List.of("Update project timeline", "Notify delivery team"), "COMPLETED", "MEDIUM", OffsetDateTime.now().minusHours(5)));
-    }
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<EmailItem>> list(
@@ -44,7 +43,7 @@ public class EmailController {
         @RequestParam(defaultValue = "20") int size,
         HttpServletRequest request
     ) {
-        List<EmailItem> items = emails.values().stream().sorted((left, right) -> right.receivedAt().compareTo(left.receivedAt())).toList();
+        List<EmailItem> items = loadEmails();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "receivedAt,DESC"));
@@ -57,48 +56,139 @@ public class EmailController {
 
     @PostMapping("/ingest")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public ApiEnvelope<EmailItem> ingest(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody IngestEmailRequest ingestEmailRequest,
         HttpServletRequest request
     ) {
-        String id = idempotencyKey == null ? UUID.randomUUID().toString() : "email-" + idempotencyKey;
-        EmailItem email = new EmailItem(id, ingestEmailRequest.senderName(), ingestEmailRequest.senderEmail(), ingestEmailRequest.subject(), ingestEmailRequest.aiSummary(), List.of(), "INGESTED", ingestEmailRequest.priority(), ingestEmailRequest.receivedAt());
-        emails.put(id, email);
+        JdbcTemplate db = requireJdbc();
+        String id = idempotencyKey == null
+            ? UUID.randomUUID().toString()
+            : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
+        String priority = ingestEmailRequest.priority() == null || ingestEmailRequest.priority().isBlank()
+            ? "MEDIUM"
+            : ingestEmailRequest.priority().toUpperCase();
+        OffsetDateTime receivedAt = ingestEmailRequest.receivedAt() == null ? OffsetDateTime.now() : ingestEmailRequest.receivedAt();
+
+        db.update(
+            "INSERT INTO aieap.emails (id, external_email_id, sender_name, sender_email, subject, ai_summary, priority, processing_status, received_at) " +
+            "VALUES (?::uuid, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
+            id,
+            id,
+            ingestEmailRequest.senderName(),
+            ingestEmailRequest.senderEmail(),
+            ingestEmailRequest.subject(),
+            ingestEmailRequest.aiSummary(),
+            priority,
+            receivedAt
+        );
+        EmailItem email = email(id);
         return ResponseFactory.success(request, email);
     }
 
     @PostMapping("/{id}/extract-tasks")
+    @Transactional
     public ApiEnvelope<ExtractTaskResponse> extractTasks(@PathVariable String id, HttpServletRequest request) {
         EmailItem email = email(id);
+        JdbcTemplate db = requireJdbc();
+        List<ExtractedTask> existing = loadExtractedTasks(id);
+        if (!existing.isEmpty()) {
+            return ResponseFactory.success(request, new ExtractTaskResponse(id, existing));
+        }
+
         List<ExtractedTask> extractedTasks = List.of(
-            new ExtractedTask("ext-" + id + "-1", email.detectedTasks().isEmpty() ? "Follow up on email" : email.detectedTasks().get(0), 0.94),
-            new ExtractedTask("ext-" + id + "-2", "Confirm execution owner", 0.82)
+            new ExtractedTask(UUID.randomUUID().toString(), email.detectedTasks().isEmpty() ? "Follow up on email" : email.detectedTasks().getFirst(), 0.94),
+            new ExtractedTask(UUID.randomUUID().toString(), "Confirm execution owner", 0.82)
         );
+        for (ExtractedTask task : extractedTasks) {
+            db.update(
+                "INSERT INTO aieap.extracted_tasks (id, email_id, suggested_title, confidence, status) VALUES (?::uuid, ?::uuid, ?, ?, 'PENDING_REVIEW')",
+                task.id(), id, task.title(), BigDecimal.valueOf(task.confidence())
+            );
+        }
         return ResponseFactory.success(request, new ExtractTaskResponse(id, extractedTasks));
     }
 
     @GetMapping("/stats")
     public ApiEnvelope<Map<String, Object>> stats(HttpServletRequest request) {
-        long pending = emails.values().stream().filter(email -> "PENDING".equals(email.status())).count();
-        long extractedTasks = emails.values().stream().mapToLong(email -> email.detectedTasks().size()).sum();
+        JdbcTemplate db = requireJdbc();
+        Integer emailsProcessed = db.queryForObject("SELECT COUNT(*) FROM aieap.emails", Integer.class);
+        Integer pending = db.queryForObject("SELECT COUNT(*) FROM aieap.emails WHERE processing_status = 'PENDING'", Integer.class);
+        Integer extractedTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.extracted_tasks", Integer.class);
         return ResponseFactory.success(request, Map.of(
-            "emailsProcessed", emails.size(),
-            "tasksDetected", extractedTasks,
-            "pendingReview", pending
+            "emailsProcessed", emailsProcessed == null ? 0 : emailsProcessed,
+            "tasksDetected", extractedTasks == null ? 0 : extractedTasks,
+            "pendingReview", pending == null ? 0 : pending
         ));
     }
 
     private EmailItem email(String id) {
-        EmailItem email = emails.get(id);
+        JdbcTemplate db = requireJdbc();
+        List<EmailItem> rows = db.query(
+            "SELECT id::text AS id, sender_name, sender_email, subject, ai_summary, processing_status, priority, received_at " +
+            "FROM aieap.emails WHERE id = ?::uuid",
+            (rs, rowNum) -> new EmailItem(
+                rs.getString("id"),
+                rs.getString("sender_name"),
+                rs.getString("sender_email"),
+                rs.getString("subject"),
+                rs.getString("ai_summary"),
+                loadExtractedTitles(rs.getString("id")),
+                rs.getString("processing_status"),
+                rs.getString("priority"),
+                rs.getObject("received_at", OffsetDateTime.class)
+            ),
+            id
+        );
+        EmailItem email = rows.isEmpty() ? null : rows.getFirst();
         if (email == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Email not found");
         }
         return email;
     }
 
-    private void register(EmailItem email) {
-        emails.put(email.id(), email);
+    private List<EmailItem> loadEmails() {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, sender_name, sender_email, subject, ai_summary, processing_status, priority, received_at FROM aieap.emails ORDER BY received_at DESC",
+            (rs, rowNum) -> new EmailItem(
+                rs.getString("id"),
+                rs.getString("sender_name"),
+                rs.getString("sender_email"),
+                rs.getString("subject"),
+                rs.getString("ai_summary"),
+                loadExtractedTitles(rs.getString("id")),
+                rs.getString("processing_status"),
+                rs.getString("priority"),
+                rs.getObject("received_at", OffsetDateTime.class)
+            )
+        );
+    }
+
+    private List<String> loadExtractedTitles(String emailId) {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT suggested_title FROM aieap.extracted_tasks WHERE email_id = ?::uuid ORDER BY created_at DESC",
+            (rs, rowNum) -> rs.getString("suggested_title"),
+            emailId
+        );
+    }
+
+    private List<ExtractedTask> loadExtractedTasks(String emailId) {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, suggested_title, confidence FROM aieap.extracted_tasks WHERE email_id = ?::uuid ORDER BY created_at DESC",
+            (rs, rowNum) -> new ExtractedTask(rs.getString("id"), rs.getString("suggested_title"), rs.getBigDecimal("confidence").doubleValue()),
+            emailId
+        );
+    }
+
+    private JdbcTemplate requireJdbc() {
+        if (jdbcTemplate == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
+        }
+        return jdbcTemplate;
     }
 
     public record EmailItem(String id, String senderName, String senderEmail, String subject, String aiSummary, List<String> detectedTasks, String status, String priority, OffsetDateTime receivedAt) {

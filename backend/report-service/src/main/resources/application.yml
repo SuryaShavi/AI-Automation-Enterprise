@@ -4,6 +4,14 @@ server:
 spring:
   application:
     name: report-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/aieap}
+    username: ${SPRING_DATASOURCE_USERNAME:aieap}
+    password: ${SPRING_DATASOURCE_PASSWORD:aieap}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 5000
+      initialization-fail-timeout: -1
 
 springdoc:
   swagger-ui:

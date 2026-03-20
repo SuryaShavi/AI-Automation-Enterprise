@@ -3,6 +3,8 @@ package com.aieap.platform.report;
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -11,8 +13,10 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,20 +32,29 @@ import org.springframework.web.server.ResponseStatusException;
 @Validated
 @Tag(name = "Reports")
 public class ReportController {
-    private final ConcurrentHashMap<String, ReportItem> reports = new ConcurrentHashMap<>();
+    private final ObjectMapper objectMapper;
 
-    public ReportController() {
-        reports.put("report-1", new ReportItem("report-1", "WEEKLY_PRODUCTIVITY", "Weekly productivity summary", "GENERATED", OffsetDateTime.now().minusHours(2), Map.of("tasksCompleted", 206, "aiRequests", 67)));
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
+
+    public ReportController(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
     }
 
     @GetMapping("/dashboard/metrics")
     public ApiEnvelope<Map<String, Object>> metrics(HttpServletRequest request) {
+        JdbcTemplate db = requireJdbc();
+        Integer totalTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks", Integer.class);
+        Integer pendingTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE status = 'PENDING'", Integer.class);
+        Integer completedTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE status = 'COMPLETED'", Integer.class);
+        Integer documentsUploaded = db.queryForObject("SELECT COUNT(*) FROM aieap.documents", Integer.class);
+        Integer aiRequestsToday = db.queryForObject("SELECT COUNT(*) FROM aieap.reports WHERE requested_at >= NOW()::date", Integer.class);
         return ResponseFactory.success(request, Map.of(
-            "totalTasks", 248,
-            "pendingTasks", 42,
-            "completedTasks", 206,
-            "documentsUploaded", 128,
-            "aiRequestsToday", 67
+            "totalTasks", totalTasks == null ? 0 : totalTasks,
+            "pendingTasks", pendingTasks == null ? 0 : pendingTasks,
+            "completedTasks", completedTasks == null ? 0 : completedTasks,
+            "documentsUploaded", documentsUploaded == null ? 0 : documentsUploaded,
+            "aiRequestsToday", aiRequestsToday == null ? 0 : aiRequestsToday
         ));
     }
 
@@ -66,7 +79,7 @@ public class ReportController {
 
     @GetMapping("/reports")
     public ApiEnvelope<PageEnvelope<ReportItem>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size, HttpServletRequest request) {
-        List<ReportItem> items = reports.values().stream().toList();
+        List<ReportItem> items = loadReports();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "requestedAt,DESC"));
@@ -74,20 +87,31 @@ public class ReportController {
 
     @PostMapping("/reports/generate")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public ApiEnvelope<ReportItem> generate(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody GenerateReportRequest generateReportRequest,
         HttpServletRequest request
     ) {
-        String id = idempotencyKey == null ? UUID.randomUUID().toString() : "report-" + idempotencyKey;
-        ReportItem report = new ReportItem(id, generateReportRequest.reportType(), generateReportRequest.title(), "REQUESTED", OffsetDateTime.now(), generateReportRequest.parameters());
-        reports.put(id, report);
+        JdbcTemplate db = requireJdbc();
+        String id = idempotencyKey == null
+            ? UUID.randomUUID().toString()
+            : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
+        String payload = toJson(generateReportRequest.parameters() == null ? Map.of() : generateReportRequest.parameters());
+        db.update(
+            "INSERT INTO aieap.reports (id, report_type, title, status, request_payload, requested_at) VALUES (?::uuid, ?, ?, 'REQUESTED', ?::jsonb, NOW()) ON CONFLICT (id) DO NOTHING",
+            id,
+            generateReportRequest.reportType(),
+            generateReportRequest.title(),
+            payload
+        );
+        ReportItem report = report(id);
         return ResponseFactory.success(request, report);
     }
 
     @GetMapping("/reports/{id}")
     public ApiEnvelope<ReportItem> get(@PathVariable String id, HttpServletRequest request) {
-        ReportItem report = reports.get(id);
+        ReportItem report = report(id);
         if (report == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Report not found");
         }
@@ -101,6 +125,65 @@ public class ReportController {
             "taskCompletionRate", List.of(Map.of("month", "Jan", "rate", 85), Map.of("month", "Feb", "rate", 88)),
             "aiUsageAnalytics", List.of(Map.of("name", "Email Processing", "value", 35), Map.of("name", "Document Analysis", "value", 25))
         ));
+    }
+
+    private List<ReportItem> loadReports() {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports ORDER BY requested_at DESC",
+            (rs, rowNum) -> new ReportItem(
+                rs.getString("id"),
+                rs.getString("report_type"),
+                rs.getString("title"),
+                rs.getString("status"),
+                rs.getObject("requested_at", OffsetDateTime.class),
+                parsePayload(rs.getString("request_payload"))
+            )
+        );
+    }
+
+    private ReportItem report(String id) {
+        JdbcTemplate db = requireJdbc();
+        List<ReportItem> rows = db.query(
+            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports WHERE id = ?::uuid",
+            (rs, rowNum) -> new ReportItem(
+                rs.getString("id"),
+                rs.getString("report_type"),
+                rs.getString("title"),
+                rs.getString("status"),
+                rs.getObject("requested_at", OffsetDateTime.class),
+                parsePayload(rs.getString("request_payload"))
+            ),
+            id
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private Map<String, Object> parsePayload(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(rawJson, new TypeReference<Map<String, Object>>() {});
+            return parsed == null ? Map.of() : parsed;
+        } catch (Exception ex) {
+            return Map.of();
+        }
+    }
+
+    private String toJson(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Unable to encode report payload", ex);
+        }
+    }
+
+    private JdbcTemplate requireJdbc() {
+        if (jdbcTemplate == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
+        }
+        return jdbcTemplate;
     }
 
     public record ReportItem(String id, String reportType, String title, String status, OffsetDateTime requestedAt, Map<String, Object> payload) {

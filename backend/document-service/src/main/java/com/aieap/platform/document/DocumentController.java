@@ -10,9 +10,11 @@ import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,35 +33,51 @@ import org.springframework.web.server.ResponseStatusException;
 @Tag(name = "Documents")
 @RequestMapping("/documents")
 public class DocumentController {
-    private final ConcurrentHashMap<String, DocumentItem> documents = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<DocumentChunk>> chunks = new ConcurrentHashMap<>();
-
-    public DocumentController() {
-        DocumentItem document = new DocumentItem("doc-1", "Annual_Report_2024.pdf", "PDF", 2516582L, "READY", "Quarterly performance with regional growth summary.", OffsetDateTime.now().minusDays(2));
-        documents.put(document.id(), document);
-        chunks.put(document.id(), List.of(
-            new DocumentChunk("chunk-1", 0, "Revenue grew 18% year over year in APAC.", "p.4-paragraph-2"),
-            new DocumentChunk("chunk-2", 1, "Operating costs declined 6% due to workflow automation.", "p.9-paragraph-1")
-        ));
-    }
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
 
     @PostMapping(path = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public ApiEnvelope<DocumentItem> upload(
         @RequestPart("file") MultipartFile file,
         @RequestPart(value = "ownerUserId", required = false) String ownerUserId,
         HttpServletRequest request
     ) {
+        JdbcTemplate db = requireJdbc();
         String id = UUID.randomUUID().toString();
-        DocumentItem document = new DocumentItem(id, file.getOriginalFilename(), file.getContentType(), file.getSize(), "UPLOADED", "Document queued for chunking and embedding.", OffsetDateTime.now());
-        documents.put(id, document);
-        chunks.put(id, List.of(new DocumentChunk(UUID.randomUUID().toString(), 0, "Initial chunk pending embedding pipeline.", "upload-0")));
+        String fileName = file.getOriginalFilename() == null ? "unnamed" : file.getOriginalFilename();
+        String fileType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
+        String storagePath = "local://uploads/" + id + "/" + fileName;
+
+        db.update(
+            "INSERT INTO aieap.documents (id, owner_user_id, file_name, file_type, file_size, storage_path, processing_status, summary, created_at, updated_at) " +
+            "VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, 'UPLOADED', ?, NOW(), NOW())",
+            id,
+            parseUuidOrNull(ownerUserId),
+            fileName,
+            fileType,
+            file.getSize(),
+            storagePath,
+            "Document queued for chunking and embedding."
+        );
+
+        String chunkId = UUID.randomUUID().toString();
+        String content = "Initial chunk pending embedding pipeline.";
+        db.update(
+            "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, citation_label) VALUES (?::uuid, ?::uuid, 0, ?, ?, 'upload-0')",
+            chunkId,
+            id,
+            content,
+            estimateTokenCount(content)
+        );
+        DocumentItem document = document(id);
         return ResponseFactory.success(request, document);
     }
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size, HttpServletRequest request) {
-        List<DocumentItem> items = documents.values().stream().toList();
+        List<DocumentItem> items = loadDocuments();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "createdAt,DESC"));
@@ -73,7 +91,7 @@ public class DocumentController {
     @PostMapping("/{id}/ask")
     public ApiEnvelope<DocumentAnswer> ask(@PathVariable String id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
         document(id);
-        List<DocumentChunk> citations = chunks.getOrDefault(id, List.of());
+        List<DocumentChunk> citations = loadChunks(id);
         return ResponseFactory.success(request, new DocumentAnswer(
             askDocumentRequest.question(),
             "Answer generated from retrieved chunks with citation-backed grounding.",
@@ -85,15 +103,84 @@ public class DocumentController {
     @GetMapping("/{id}/chunks")
     public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable String id, HttpServletRequest request) {
         document(id);
-        return ResponseFactory.success(request, chunks.getOrDefault(id, List.of()));
+        return ResponseFactory.success(request, loadChunks(id));
     }
 
     private DocumentItem document(String id) {
-        DocumentItem document = documents.get(id);
+        JdbcTemplate db = requireJdbc();
+        List<DocumentItem> rows = db.query(
+            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE id = ?::uuid",
+            (rs, rowNum) -> new DocumentItem(
+                rs.getString("id"),
+                rs.getString("file_name"),
+                rs.getString("file_type"),
+                rs.getLong("file_size"),
+                rs.getString("processing_status"),
+                rs.getString("summary"),
+                rs.getObject("created_at", OffsetDateTime.class)
+            ),
+            id
+        );
+        DocumentItem document = rows.isEmpty() ? null : rows.getFirst();
         if (document == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Document not found");
         }
         return document;
+    }
+
+    private List<DocumentItem> loadDocuments() {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents ORDER BY created_at DESC",
+            (rs, rowNum) -> new DocumentItem(
+                rs.getString("id"),
+                rs.getString("file_name"),
+                rs.getString("file_type"),
+                rs.getLong("file_size"),
+                rs.getString("processing_status"),
+                rs.getString("summary"),
+                rs.getObject("created_at", OffsetDateTime.class)
+            )
+        );
+    }
+
+    private List<DocumentChunk> loadChunks(String documentId) {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, chunk_index, content, citation_label FROM aieap.document_chunks WHERE document_id = ?::uuid ORDER BY chunk_index",
+            (rs, rowNum) -> new DocumentChunk(
+                rs.getString("id"),
+                rs.getInt("chunk_index"),
+                rs.getString("content"),
+                rs.getString("citation_label")
+            ),
+            documentId
+        );
+    }
+
+    private JdbcTemplate requireJdbc() {
+        if (jdbcTemplate == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
+        }
+        return jdbcTemplate;
+    }
+
+    private String parseUuidOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value).toString();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private int estimateTokenCount(String content) {
+        if (content == null || content.isBlank()) {
+            return 0;
+        }
+        return content.trim().split("\\s+").length;
     }
 
     public record DocumentItem(String id, String fileName, String fileType, long fileSize, String processingStatus, String summary, OffsetDateTime createdAt) {
