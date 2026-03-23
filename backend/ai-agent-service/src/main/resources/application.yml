@@ -28,3 +28,4 @@ ai:
     base-url: ${AI_PROVIDER_BASE_URL:http://localhost:11434/v1}
     api-key: ${AI_PROVIDER_API_KEY:ollama}
     model: ${AI_PROVIDER_MODEL:llama3.2}
+    embedding-model: ${AI_PROVIDER_EMBEDDING_MODEL:nomic-embed-text}

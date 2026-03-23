@@ -1,9 +1,15 @@
 package com.aieap.platform.document;
 
 import com.aieap.platform.common.ai.LlmClient;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -69,6 +75,7 @@ public class DocumentRagService {
     private String extractText(MultipartFile file) {
         try {
             String contentType = file.getContentType();
+            String filename = file.getOriginalFilename();
             byte[] bytes = file.getBytes();
             if (bytes.length == 0) {
                 return "";
@@ -78,15 +85,56 @@ public class DocumentRagService {
                 return new String(bytes, StandardCharsets.UTF_8);
             }
 
-            String filename = file.getOriginalFilename();
-            if (filename != null && (filename.endsWith(".txt") || filename.endsWith(".md") || filename.endsWith(".csv") || filename.endsWith(".json"))) {
+            if (hasExtension(filename, ".txt", ".md", ".csv", ".json")) {
                 return new String(bytes, StandardCharsets.UTF_8);
+            }
+
+            if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("pdf") || hasExtension(filename, ".pdf")) {
+                return extractPdf(bytes);
+            }
+
+            if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("word") || hasExtension(filename, ".docx")) {
+                return extractDocx(bytes);
             }
 
             return "";
         } catch (Exception ex) {
             return "";
         }
+    }
+
+    private String extractPdf(byte[] bytes) {
+        try (PDDocument document = PDDocument.load(bytes)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            return stripper.getText(document);
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private String extractDocx(byte[] bytes) {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            StringBuilder builder = new StringBuilder();
+            for (XWPFParagraph paragraph : document.getParagraphs()) {
+                builder.append(paragraph.getText()).append("\n");
+            }
+            return builder.toString();
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private boolean hasExtension(String filename, String... extensions) {
+        if (filename == null || filename.isBlank()) {
+            return false;
+        }
+        String normalized = filename.toLowerCase(Locale.ROOT);
+        for (String extension : extensions) {
+            if (normalized.endsWith(extension)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<String> chunkText(String text, int chunkSize, int overlap) {

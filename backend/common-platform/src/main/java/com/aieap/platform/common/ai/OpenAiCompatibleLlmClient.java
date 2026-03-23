@@ -2,6 +2,7 @@ package com.aieap.platform.common.ai;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
@@ -60,6 +61,36 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
     }
 
+    @Override
+    public List<Double> embedding(String input) {
+        if (!isConfigured()) {
+            throw new IllegalStateException("AI provider key is not configured");
+        }
+
+        String embeddingModel = StringUtils.hasText(properties.getEmbeddingModel())
+            ? properties.getEmbeddingModel()
+            : properties.getModel();
+
+        Map<String, Object> payload = Map.of(
+            "model", embeddingModel,
+            "input", input == null ? "" : input
+        );
+
+        try {
+            Map<String, Object> response = restClient.post()
+                .uri("/embeddings")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getApiKey())
+                .body(payload)
+                .retrieve()
+                .body(MAP_TYPE);
+
+            return extractEmbedding(response);
+        } catch (RestClientException ex) {
+            throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "Embedding provider call failed: " + ex.getMessage(), ex);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private String extractContent(Map<String, Object> response) {
         if (response == null) {
@@ -79,5 +110,38 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
         Object content = message.get("content");
         return content == null ? "" : content.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Double> extractEmbedding(Map<String, Object> response) {
+        if (response == null) {
+            return List.of();
+        }
+
+        Object dataRaw = response.get("data");
+        if (dataRaw instanceof List<?> data && !data.isEmpty()) {
+            Object first = data.getFirst();
+            if (first instanceof Map<?, ?> map) {
+                Object embeddingRaw = map.get("embedding");
+                if (embeddingRaw instanceof List<?> values) {
+                    return values.stream()
+                        .filter(Number.class::isInstance)
+                        .map(Number.class::cast)
+                        .map(Number::doubleValue)
+                        .collect(Collectors.toList());
+                }
+            }
+        }
+
+        Object direct = response.get("embedding");
+        if (direct instanceof List<?> values) {
+            return values.stream()
+                .filter(Number.class::isInstance)
+                .map(Number.class::cast)
+                .map(Number::doubleValue)
+                .collect(Collectors.toList());
+        }
+
+        return List.of();
     }
 }

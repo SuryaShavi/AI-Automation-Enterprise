@@ -28,3 +28,9 @@ ai:
     base-url: ${AI_PROVIDER_BASE_URL:http://localhost:11434/v1}
     api-key: ${AI_PROVIDER_API_KEY:ollama}
     model: ${AI_PROVIDER_MODEL:llama3.2}
+    embedding-model: ${AI_PROVIDER_EMBEDDING_MODEL:nomic-embed-text}
+
+qdrant:
+  base-url: ${QDRANT_BASE_URL:http://localhost:6333}
+  collection: ${QDRANT_COLLECTION:aieap-documents}
+  vector-size: ${QDRANT_VECTOR_SIZE:3072}

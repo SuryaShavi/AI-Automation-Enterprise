@@ -1,6 +1,7 @@
 package com.aieap.platform.document;
 
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.ai.LlmClient;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -8,8 +9,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -33,10 +39,20 @@ import org.springframework.web.server.ResponseStatusException;
 @Tag(name = "Documents")
 @RequestMapping("/documents")
 public class DocumentController {
-    private final DocumentRagService documentRagService;
+    private static final Logger LOGGER = LoggerFactory.getLogger(DocumentController.class);
 
-    public DocumentController(DocumentRagService documentRagService) {
+    private final DocumentRagService documentRagService;
+    private final LlmClient llmClient;
+    private final QdrantVectorStoreClient qdrantVectorStoreClient;
+
+    public DocumentController(
+        DocumentRagService documentRagService,
+        LlmClient llmClient,
+        QdrantVectorStoreClient qdrantVectorStoreClient
+    ) {
         this.documentRagService = documentRagService;
+        this.llmClient = llmClient;
+        this.qdrantVectorStoreClient = qdrantVectorStoreClient;
     }
 
     @Autowired(required = false)
@@ -70,18 +86,24 @@ public class DocumentController {
             processed.summary()
         );
 
+        List<String> chunkIds = new ArrayList<>();
         for (int i = 0; i < processed.chunks().size(); i++) {
             String content = processed.chunks().get(i);
+            String chunkId = UUID.randomUUID().toString();
+            chunkIds.add(chunkId);
             db.update(
-                "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, citation_label) VALUES (?::uuid, ?::uuid, ?, ?, ?, ?)",
-                UUID.randomUUID().toString(),
+                "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, vector_id, citation_label) VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?)",
+                chunkId,
                 id,
                 i,
                 content,
                 estimateTokenCount(content),
+                null,
                 "upload-" + i
             );
         }
+
+        indexChunksInVectorStore(id, chunkIds, processed.chunks());
 
         DocumentItem document = document(id);
         return ResponseFactory.success(request, document);
@@ -103,12 +125,23 @@ public class DocumentController {
     @PostMapping("/{id}/ask")
     public ApiEnvelope<DocumentAnswer> ask(@PathVariable String id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
         document(id);
-        List<DocumentChunk> citations = loadRelevantChunks(id, askDocumentRequest.question(), 8);
+        RetrievalResult retrievalResult = loadRelevantChunks(id, askDocumentRequest.question(), 8);
+        List<DocumentChunk> citations = retrievalResult.chunks();
         String answer = documentRagService.answerQuestion(askDocumentRequest.question(), citations);
+
+        double confidence;
+        if (citations.isEmpty()) {
+            confidence = 0.2;
+        } else if (retrievalResult.mode() == RetrievalMode.VECTOR) {
+            confidence = 0.9;
+        } else {
+            confidence = 0.75;
+        }
+
         return ResponseFactory.success(request, new DocumentAnswer(
             askDocumentRequest.question(),
             answer,
-            citations.isEmpty() ? 0.2 : 0.85,
+            confidence,
             citations
         ));
     }
@@ -171,7 +204,22 @@ public class DocumentController {
         );
     }
 
-    private List<DocumentChunk> loadRelevantChunks(String documentId, String question, int limit) {
+    private RetrievalResult loadRelevantChunks(String documentId, String question, int limit) {
+        List<DocumentChunk> vectorHits = loadRelevantChunksByVector(documentId, question, limit);
+        if (!vectorHits.isEmpty()) {
+            return new RetrievalResult(RetrievalMode.VECTOR, vectorHits);
+        }
+
+        List<DocumentChunk> sqlHits = loadRelevantChunksBySql(documentId, question, limit);
+        if (!sqlHits.isEmpty()) {
+            LOGGER.info("Falling back to SQL retrieval for document {}", documentId);
+            return new RetrievalResult(RetrievalMode.SQL, sqlHits);
+        }
+
+        return new RetrievalResult(RetrievalMode.NONE, List.of());
+    }
+
+    private List<DocumentChunk> loadRelevantChunksBySql(String documentId, String question, int limit) {
         JdbcTemplate db = requireJdbc();
         return db.query(
             "SELECT id::text AS id, chunk_index, content, citation_label FROM aieap.document_chunks " +
@@ -188,6 +236,104 @@ public class DocumentController {
             question,
             limit
         );
+    }
+
+    private List<DocumentChunk> loadRelevantChunksByVector(String documentId, String question, int limit) {
+        if (question == null || question.isBlank() || !llmClient.isConfigured() || !qdrantVectorStoreClient.isAvailable()) {
+            return List.of();
+        }
+
+        try {
+            List<Double> queryEmbedding = llmClient.embedding(question);
+            if (queryEmbedding.isEmpty()) {
+                return List.of();
+            }
+
+            List<String> vectorIds = qdrantVectorStoreClient.searchPointIds(queryEmbedding, documentId, limit);
+            if (vectorIds.isEmpty()) {
+                return List.of();
+            }
+
+            return loadChunksByVectorIds(documentId, vectorIds);
+        } catch (Exception ex) {
+            LOGGER.warn("Vector retrieval failed for document {}. Falling back to SQL retrieval", documentId, ex);
+            return List.of();
+        }
+    }
+
+    private List<DocumentChunk> loadChunksByVectorIds(String documentId, List<String> vectorIds) {
+        JdbcTemplate db = requireJdbc();
+        String placeholders = String.join(",", Collections.nCopies(vectorIds.size(), "?"));
+        StringBuilder orderBy = new StringBuilder("CASE vector_id ");
+        for (int i = 0; i < vectorIds.size(); i++) {
+            orderBy.append("WHEN ? THEN ").append(i).append(" ");
+        }
+        orderBy.append("ELSE 9999 END");
+
+        String sql = "SELECT id::text AS id, chunk_index, content, citation_label, vector_id FROM aieap.document_chunks " +
+            "WHERE document_id = ?::uuid AND vector_id IN (" + placeholders + ") " +
+            "ORDER BY " + orderBy;
+
+        List<Object> args = new ArrayList<>();
+        args.add(documentId);
+        args.addAll(vectorIds);
+        args.addAll(vectorIds);
+
+        return db.query(
+            sql,
+            (rs, rowNum) -> new DocumentChunk(
+                rs.getString("id"),
+                rs.getInt("chunk_index"),
+                rs.getString("content"),
+                rs.getString("citation_label")
+            ),
+            args.toArray()
+        );
+    }
+
+    private void indexChunksInVectorStore(String documentId, List<String> chunkIds, List<String> chunks) {
+        if (!llmClient.isConfigured() || !qdrantVectorStoreClient.isAvailable()) {
+            return;
+        }
+
+        JdbcTemplate db = requireJdbc();
+        boolean collectionReady = false;
+
+        for (int i = 0; i < chunks.size(); i++) {
+            String content = chunks.get(i);
+            String chunkId = chunkIds.get(i);
+            try {
+                List<Double> embedding = llmClient.embedding(content);
+                if (embedding.isEmpty()) {
+                    continue;
+                }
+
+                if (!collectionReady) {
+                    qdrantVectorStoreClient.ensureCollection(embedding.size());
+                    collectionReady = true;
+                }
+
+                String pointId = documentId + "-" + i;
+                qdrantVectorStoreClient.upsertPoint(
+                    pointId,
+                    embedding,
+                    Map.of(
+                        "documentId", documentId,
+                        "chunkId", chunkId,
+                        "chunkIndex", i,
+                        "citationLabel", "upload-" + i
+                    )
+                );
+
+                db.update(
+                    "UPDATE aieap.document_chunks SET vector_id = ? WHERE id = ?::uuid",
+                    pointId,
+                    chunkId
+                );
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to index chunk {} for document {} into vector store", chunkId, documentId, ex);
+            }
+        }
     }
 
     private JdbcTemplate requireJdbc() {
@@ -225,5 +371,14 @@ public class DocumentController {
     }
 
     public record DocumentAnswer(String question, String answer, double confidence, List<DocumentChunk> citations) {
+    }
+
+    public enum RetrievalMode {
+        VECTOR,
+        SQL,
+        NONE
+    }
+
+    public record RetrievalResult(RetrievalMode mode, List<DocumentChunk> chunks) {
     }
 }
