@@ -29,8 +29,10 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/ai")
 public class AiController {
     private final ConcurrentHashMap<String, ChatConversation> conversations = new ConcurrentHashMap<>();
+    private final AiChatService aiChatService;
 
-    public AiController() {
+    public AiController(AiChatService aiChatService) {
+        this.aiChatService = aiChatService;
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(new ChatMessage("msg-1", "assistant", "Hello. I can summarize documents, extract tasks, and draft reports.", OffsetDateTime.now().minusMinutes(20)));
         conversations.put("chat-1", new ChatConversation("chat-1", "Morning Ops Review", OffsetDateTime.now().minusMinutes(20), messages));
@@ -42,11 +44,18 @@ public class AiController {
         ChatConversation conversation = conversations.computeIfAbsent(chatId, id -> new ChatConversation(id, chatRequest.prompt().substring(0, Math.min(chatRequest.prompt().length(), 24)), OffsetDateTime.now(), new ArrayList<>()));
         conversation.messages().add(new ChatMessage(UUID.randomUUID().toString(), "user", chatRequest.prompt(), OffsetDateTime.now()));
 
-        String answer = "AI action completed for mode '" + chatRequest.mode() + "'. Suggested next step: confirm owner and due date for follow-up.";
+        AiChatService.ChatResult chatResult = aiChatService.answer(
+            chatRequest.mode(),
+            chatRequest.prompt(),
+            chatRequest.attachments(),
+            conversation.messages()
+        );
+
+        String answer = chatResult.content();
         ChatMessage assistantMessage = new ChatMessage(UUID.randomUUID().toString(), "assistant", answer, OffsetDateTime.now());
         conversation.messages().add(assistantMessage);
 
-        return ResponseFactory.success(request, new ChatReply(chatId, assistantMessage, List.of("confidence:0.89", "guardrail:no-sensitive-data-leak")));
+        return ResponseFactory.success(request, new ChatReply(chatId, assistantMessage, chatResult.guardrails()));
     }
 
     @GetMapping("/chats")

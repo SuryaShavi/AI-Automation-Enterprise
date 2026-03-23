@@ -33,6 +33,12 @@ import org.springframework.web.server.ResponseStatusException;
 @Tag(name = "Documents")
 @RequestMapping("/documents")
 public class DocumentController {
+    private final DocumentRagService documentRagService;
+
+    public DocumentController(DocumentRagService documentRagService) {
+        this.documentRagService = documentRagService;
+    }
+
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
@@ -49,28 +55,34 @@ public class DocumentController {
         String fileName = file.getOriginalFilename() == null ? "unnamed" : file.getOriginalFilename();
         String fileType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
         String storagePath = "local://uploads/" + id + "/" + fileName;
+        DocumentRagService.ProcessedDocument processed = documentRagService.processUpload(file);
 
         db.update(
             "INSERT INTO aieap.documents (id, owner_user_id, file_name, file_type, file_size, storage_path, processing_status, summary, created_at, updated_at) " +
-            "VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, 'UPLOADED', ?, NOW(), NOW())",
+            "VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
             id,
             parseUuidOrNull(ownerUserId),
             fileName,
             fileType,
             file.getSize(),
             storagePath,
-            "Document queued for chunking and embedding."
+            processed.chunks().isEmpty() ? "UPLOADED" : "RAG_READY",
+            processed.summary()
         );
 
-        String chunkId = UUID.randomUUID().toString();
-        String content = "Initial chunk pending embedding pipeline.";
-        db.update(
-            "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, citation_label) VALUES (?::uuid, ?::uuid, 0, ?, ?, 'upload-0')",
-            chunkId,
-            id,
-            content,
-            estimateTokenCount(content)
-        );
+        for (int i = 0; i < processed.chunks().size(); i++) {
+            String content = processed.chunks().get(i);
+            db.update(
+                "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, citation_label) VALUES (?::uuid, ?::uuid, ?, ?, ?, ?)",
+                UUID.randomUUID().toString(),
+                id,
+                i,
+                content,
+                estimateTokenCount(content),
+                "upload-" + i
+            );
+        }
+
         DocumentItem document = document(id);
         return ResponseFactory.success(request, document);
     }
@@ -91,11 +103,12 @@ public class DocumentController {
     @PostMapping("/{id}/ask")
     public ApiEnvelope<DocumentAnswer> ask(@PathVariable String id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
         document(id);
-        List<DocumentChunk> citations = loadChunks(id);
+        List<DocumentChunk> citations = loadRelevantChunks(id, askDocumentRequest.question(), 8);
+        String answer = documentRagService.answerQuestion(askDocumentRequest.question(), citations);
         return ResponseFactory.success(request, new DocumentAnswer(
             askDocumentRequest.question(),
-            "Answer generated from retrieved chunks with citation-backed grounding.",
-            0.91,
+            answer,
+            citations.isEmpty() ? 0.2 : 0.85,
             citations
         ));
     }
@@ -155,6 +168,25 @@ public class DocumentController {
                 rs.getString("citation_label")
             ),
             documentId
+        );
+    }
+
+    private List<DocumentChunk> loadRelevantChunks(String documentId, String question, int limit) {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id, chunk_index, content, citation_label FROM aieap.document_chunks " +
+            "WHERE document_id = ?::uuid " +
+            "ORDER BY ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) DESC, chunk_index ASC " +
+            "LIMIT ?",
+            (rs, rowNum) -> new DocumentChunk(
+                rs.getString("id"),
+                rs.getInt("chunk_index"),
+                rs.getString("content"),
+                rs.getString("citation_label")
+            ),
+            documentId,
+            question,
+            limit
         );
     }
 

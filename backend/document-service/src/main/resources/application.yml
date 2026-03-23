@@ -22,3 +22,9 @@ management:
     web:
       exposure:
         include: health,info
+
+ai:
+  provider:
+    base-url: ${AI_PROVIDER_BASE_URL:https://api.openai.com/v1}
+    api-key: ${AI_PROVIDER_API_KEY:}
+    model: ${AI_PROVIDER_MODEL:gpt-4o-mini}
