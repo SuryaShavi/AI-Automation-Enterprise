@@ -101,18 +101,53 @@ public class WorkflowController {
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", id));
     }
 
+    @PostMapping("/workflows/{id}/run")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
+    public ApiEnvelope<Map<String, Object>> run(@PathVariable String id, HttpServletRequest request) {
+        workflow(id);
+        JdbcTemplate db = requireJdbc();
+        String executionId = UUID.randomUUID().toString();
+        db.update(
+            "INSERT INTO aieap.workflow_executions (id, workflow_id, status, started_at, duration_ms, result_json) " +
+            "VALUES (?::uuid, ?::uuid, 'RUNNING', NOW(), 0, '{}'::jsonb)",
+            executionId, id
+        );
+        // Simulate synchronous execution: mark COMPLETED immediately.
+        db.update(
+            "UPDATE aieap.workflow_executions SET status = 'COMPLETED', completed_at = NOW(), " +
+            "duration_ms = EXTRACT(MILLISECONDS FROM (NOW() - started_at))::INT, " +
+            "result_json = '{\"outcome\":\"success\"}'::jsonb WHERE id = ?::uuid",
+            executionId
+        );
+        Map<String, Object> result = db.queryForMap(
+            "SELECT id::text AS id, status, started_at, completed_at, duration_ms FROM aieap.workflow_executions WHERE id = ?::uuid",
+            executionId
+        );
+        return ResponseFactory.success(request, Map.of(
+            "executionId", result.get("id"),
+            "status", result.get("status"),
+            "startedAt", String.valueOf(result.get("started_at")),
+            "completedAt", String.valueOf(result.get("completed_at")),
+            "durationMs", result.get("duration_ms")
+        ));
+    }
+
     @GetMapping("/workflows/{id}/executions")
     public ApiEnvelope<List<Map<String, Object>>> executions(@PathVariable String id, HttpServletRequest request) {
         workflow(id);
         JdbcTemplate db = requireJdbc();
         List<Map<String, Object>> rows = db.query(
-            "SELECT id::text AS id, status, started_at, duration_ms FROM aieap.workflow_executions WHERE workflow_id = ?::uuid ORDER BY started_at DESC",
-            (rs, rowNum) -> Map.of(
-                "executionId", rs.getString("id"),
-                "status", rs.getString("status"),
-                "startedAt", String.valueOf(rs.getObject("started_at", OffsetDateTime.class)),
-                "durationMs", rs.getInt("duration_ms")
-            ),
+            "SELECT id::text AS id, status, started_at, completed_at, duration_ms FROM aieap.workflow_executions WHERE workflow_id = ?::uuid ORDER BY started_at DESC",
+            (rs, rowNum) -> {
+                Map<String, Object> row = new java.util.LinkedHashMap<>();
+                row.put("executionId", rs.getString("id"));
+                row.put("status", rs.getString("status"));
+                row.put("startedAt", String.valueOf(rs.getObject("started_at", OffsetDateTime.class)));
+                row.put("completedAt", String.valueOf(rs.getObject("completed_at", OffsetDateTime.class)));
+                row.put("durationMs", rs.getInt("duration_ms"));
+                return row;
+            },
             id
         );
         return ResponseFactory.success(request, rows);
