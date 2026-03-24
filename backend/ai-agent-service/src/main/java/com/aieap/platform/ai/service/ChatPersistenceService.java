@@ -48,10 +48,10 @@ public class ChatPersistenceService {
     public ChatSession getChatSessionOrCreate(UUID sessionId, UUID userId, String firstMessage) {
         return chatSessionRepository.findByIdAndUserId(sessionId, userId)
             .orElseGet(() -> {
-                // Honour the client-provided UUID so the frontend's chatId stays stable
+                // Let JPA generate the identifier; manually assigning IDs on a generated
+                // entity can cause optimistic locking failures during merge/save.
                 String title = firstMessage.substring(0, Math.min(firstMessage.length(), 50));
                 ChatSession session = new ChatSession(userId, title);
-                session.setId(sessionId);
                 return chatSessionRepository.save(session);
             });
     }

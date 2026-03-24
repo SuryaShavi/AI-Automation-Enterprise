@@ -3,6 +3,7 @@ package com.aieap.platform.ai;
 import com.aieap.platform.ai.service.PromptTemplateService;
 import com.aieap.platform.common.ai.AiProviderProperties;
 import com.aieap.platform.common.ai.LlmClient;
+import com.aieap.platform.common.ai.TokenEstimator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.dao.DataAccessException;
@@ -20,6 +22,9 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class AiChatService {
+    private static final Pattern INJECTION_PATTERN = Pattern.compile("(?i)(ignore\\s+previous|reveal\\s+system\\s+prompt|developer\\s+message|jailbreak|bypass\\s+safety)");
+    private static final Pattern SECRETS_PATTERN = Pattern.compile("(?i)(api[_-]?key|access[_-]?token|password|secret|private\\s+key)");
+    private static final Set<String> DISALLOWED_TOPICS = Set.of("build bomb", "make malware", "credential stuffing");
     private static final Pattern DUE_PATTERN = Pattern.compile("\\bby\\s+([A-Za-z0-9, ]{2,30})", Pattern.CASE_INSENSITIVE);
 
     private static final String DEFAULT_SYSTEM_PROMPT =
@@ -38,6 +43,7 @@ public class AiChatService {
     );
 
     private final LlmClient llmClient;
+    private final TokenEstimator tokenEstimator;
     private final ObjectMapper objectMapper;
     private final PromptTemplateService promptTemplateService;
     private final AiProviderProperties aiProviderProperties;
@@ -51,11 +57,13 @@ public class AiChatService {
         ObjectMapper objectMapper,
         PromptTemplateService promptTemplateService,
         AiProviderProperties aiProviderProperties,
-        QdrantVectorStoreClient qdrantVectorStoreClient
+        QdrantVectorStoreClient qdrantVectorStoreClient,
+        TokenEstimator tokenEstimator
     ) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.promptTemplateService = promptTemplateService;
+        this.tokenEstimator = tokenEstimator;
         this.aiProviderProperties = aiProviderProperties;
         this.qdrantVectorStoreClient = qdrantVectorStoreClient;
     }
@@ -73,6 +81,17 @@ public class AiChatService {
         if (normalizedPrompt.isBlank()) {
             guardrails.add("guardrail:empty-prompt");
             return buildResult("Please provide a prompt before sending a chat request.", guardrails, List.of(), GroundingContext.empty(), true);
+        }
+
+        if (isBlockedPrompt(normalizedPrompt)) {
+            guardrails.add("guardrail:blocked-prompt");
+            return buildResult(
+                "This request violates assistant safety policy. Please rephrase with a legitimate enterprise automation objective.",
+                guardrails,
+                List.of(),
+                GroundingContext.empty(),
+                true
+            );
         }
 
         if (!llmClient.isConfigured()) {
@@ -109,17 +128,22 @@ public class AiChatService {
             "Tool context:\n" + toolContext + "\n" +
             "User prompt:\n" + normalizedPrompt;
 
+        int promptTokenEstimate = tokenEstimator.estimate(systemPrompt) + tokenEstimator.estimate(userPrompt);
+        guardrails.add("prompt-tokens:" + promptTokenEstimate);
+
         String completion;
         try {
             completion = llmClient.completion(
-                clamp(systemPrompt, Math.max(500, aiProviderProperties.getMaxPromptChars() / 3)),
-                clamp(userPrompt, aiProviderProperties.getMaxPromptChars()),
+                tokenAwareClamp(systemPrompt, Math.max(200, aiProviderProperties.getMaxPromptTokens() / 3), Math.max(500, aiProviderProperties.getMaxPromptChars() / 3)),
+                tokenAwareClamp(userPrompt, aiProviderProperties.getMaxPromptTokens(), aiProviderProperties.getMaxPromptChars()),
                 new LlmClient.CompletionOptions(aiProviderProperties.getMaxOutputTokens(), 0.2)
             );
         } catch (Exception ex) {
             guardrails.add("fallback:provider-error");
             return buildResult(buildFailureFallback(groundingContext), guardrails, plannedTools, groundingContext, true);
         }
+
+        completion = redactSensitiveOutput(completion, guardrails);
 
         if (groundingContext.grounded() && !containsCitation(completion, groundingContext.citations())) {
             guardrails.add("guardrail:citations-appended");
@@ -267,12 +291,16 @@ public class AiChatService {
 
         StringBuilder builder = new StringBuilder();
         int maxContextChars = Math.max(1000, aiProviderProperties.getMaxContextChars());
+        int maxContextTokens = Math.max(300, aiProviderProperties.getMaxContextTokens());
+        int currentContextTokens = 0;
         for (DocumentSnippet snippet : snippets) {
             String line = "[" + snippet.citationLabel() + "] " + snippet.content() + "\n";
-            if (builder.length() + line.length() > maxContextChars) {
+            int lineTokens = tokenEstimator.estimate(line);
+            if (builder.length() + line.length() > maxContextChars || currentContextTokens + lineTokens > maxContextTokens) {
                 break;
             }
             builder.append(line);
+            currentContextTokens += lineTokens;
         }
 
         String retrievalMode = snippets.stream().map(DocumentSnippet::retrievalMode).filter(Objects::nonNull).findFirst().orElse("sql");
@@ -440,12 +468,28 @@ public class AiChatService {
         if (prompt == null) {
             return "";
         }
+
         String normalized = prompt.replaceAll("\\s+", " ").trim();
         if (normalized.length() > aiProviderProperties.getMaxPromptChars()) {
-            guardrails.add("guardrail:prompt-truncated");
-            return normalized.substring(0, aiProviderProperties.getMaxPromptChars());
+            guardrails.add("guardrail:prompt-char-truncated");
+            normalized = normalized.substring(0, aiProviderProperties.getMaxPromptChars());
         }
+
+        int estimatedTokens = tokenEstimator.estimate(normalized);
+        if (estimatedTokens > aiProviderProperties.getMaxPromptTokens()) {
+            guardrails.add("guardrail:prompt-token-truncated");
+            normalized = tokenEstimator.truncateToTokens(normalized, aiProviderProperties.getMaxPromptTokens());
+        }
+
         return normalized;
+    }
+
+    private String tokenAwareClamp(String value, int maxTokens, int maxChars) {
+        String clamped = clamp(value, maxChars);
+        if (tokenEstimator.estimate(clamped) > maxTokens) {
+            return tokenEstimator.truncateToTokens(clamped, maxTokens);
+        }
+        return clamped;
     }
 
     private String clamp(String value, int maxLength) {
@@ -453,6 +497,32 @@ public class AiChatService {
             return value == null ? "" : value;
         }
         return value.substring(0, Math.max(0, maxLength));
+    }
+
+    private boolean isBlockedPrompt(String prompt) {
+        if (prompt == null || prompt.isBlank()) {
+            return false;
+        }
+
+        String lowered = prompt.toLowerCase(Locale.ROOT);
+        if (INJECTION_PATTERN.matcher(lowered).find()) {
+            return true;
+        }
+
+        return DISALLOWED_TOPICS.stream().anyMatch(lowered::contains);
+    }
+
+    private String redactSensitiveOutput(String completion, List<String> guardrails) {
+        if (completion == null || completion.isBlank()) {
+            return completion == null ? "" : completion;
+        }
+
+        if (!SECRETS_PATTERN.matcher(completion).find()) {
+            return completion;
+        }
+
+        guardrails.add("guardrail:output-redacted");
+        return SECRETS_PATTERN.matcher(completion).replaceAll("[REDACTED]");
     }
 
     private boolean containsCitation(String completion, List<String> citations) {

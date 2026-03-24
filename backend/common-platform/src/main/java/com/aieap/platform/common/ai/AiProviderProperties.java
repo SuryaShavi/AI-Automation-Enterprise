@@ -13,7 +13,9 @@ public class AiProviderProperties {
     private int maxRetries = 2;
     private long retryBackoffMs = 750;
     private int maxPromptChars = 12000;
+    private int maxPromptTokens = 3000;
     private int maxContextChars = 6000;
+    private int maxContextTokens = 1600;
     private int maxOutputTokens = 700;
     private int plannerMaxOutputTokens = 180;
     private int maxHistoryMessages = 8;
@@ -91,12 +93,28 @@ public class AiProviderProperties {
         this.maxPromptChars = maxPromptChars;
     }
 
+    public int getMaxPromptTokens() {
+        return maxPromptTokens;
+    }
+
+    public void setMaxPromptTokens(int maxPromptTokens) {
+        this.maxPromptTokens = maxPromptTokens;
+    }
+
     public int getMaxContextChars() {
         return maxContextChars;
     }
 
     public void setMaxContextChars(int maxContextChars) {
         this.maxContextChars = maxContextChars;
+    }
+
+    public int getMaxContextTokens() {
+        return maxContextTokens;
+    }
+
+    public void setMaxContextTokens(int maxContextTokens) {
+        this.maxContextTokens = maxContextTokens;
     }
 
     public int getMaxOutputTokens() {

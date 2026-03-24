@@ -29,6 +29,8 @@ ai:
     api-key: ${AI_PROVIDER_API_KEY:ollama}
     model: ${AI_PROVIDER_MODEL:llama3.2}
     embedding-model: ${AI_PROVIDER_EMBEDDING_MODEL:nomic-embed-text}
+    max-prompt-chars: ${AI_PROVIDER_MAX_PROMPT_CHARS:12000}
+    max-prompt-tokens: ${AI_PROVIDER_MAX_PROMPT_TOKENS:3000}
 
 qdrant:
   base-url: ${QDRANT_BASE_URL:http://localhost:6333}

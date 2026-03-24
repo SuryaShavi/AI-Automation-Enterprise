@@ -22,6 +22,18 @@
       "type": "java.lang.String",
       "description": "Embedding model name. Falls back to ai.provider.model when not set.",
       "defaultValue": "text-embedding-3-small"
+    },
+    {
+      "name": "ai.provider.max-prompt-tokens",
+      "type": "java.lang.Integer",
+      "description": "Approximate token budget for all prompt input content.",
+      "defaultValue": 3000
+    },
+    {
+      "name": "ai.provider.max-context-tokens",
+      "type": "java.lang.Integer",
+      "description": "Approximate token budget for retrieved or grounding context.",
+      "defaultValue": 1600
     }
   ]
 }

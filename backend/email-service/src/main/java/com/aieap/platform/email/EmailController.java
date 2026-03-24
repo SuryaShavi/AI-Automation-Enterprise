@@ -34,8 +34,14 @@ import org.springframework.web.server.ResponseStatusException;
 @Tag(name = "Emails")
 @RequestMapping("/emails")
 public class EmailController {
+    private final EmailAiService emailAiService;
+
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    public EmailController(EmailAiService emailAiService) {
+        this.emailAiService = emailAiService;
+    }
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<EmailItem>> list(
@@ -71,15 +77,21 @@ public class EmailController {
             : ingestEmailRequest.priority().toUpperCase();
         OffsetDateTime receivedAt = ingestEmailRequest.receivedAt() == null ? OffsetDateTime.now() : ingestEmailRequest.receivedAt();
 
+        String generatedSummary = ingestEmailRequest.aiSummary() == null || ingestEmailRequest.aiSummary().isBlank()
+            ? emailAiService.generateSummary(ingestEmailRequest)
+            : ingestEmailRequest.aiSummary();
+
         db.update(
-            "INSERT INTO aieap.emails (id, external_email_id, sender_name, sender_email, subject, ai_summary, priority, processing_status, received_at) " +
-            "VALUES (?::uuid, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO aieap.emails (id, external_email_id, sender_name, sender_email, subject, body_text, body_html, ai_summary, priority, processing_status, received_at) " +
+            "VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
             id,
             id,
             ingestEmailRequest.senderName(),
             ingestEmailRequest.senderEmail(),
             ingestEmailRequest.subject(),
-            ingestEmailRequest.aiSummary(),
+            ingestEmailRequest.bodyText(),
+            ingestEmailRequest.bodyHtml(),
+            generatedSummary,
             priority,
             receivedAt
         );
@@ -97,10 +109,7 @@ public class EmailController {
             return ResponseFactory.success(request, new ExtractTaskResponse(id, existing));
         }
 
-        List<ExtractedTask> extractedTasks = List.of(
-            new ExtractedTask(UUID.randomUUID().toString(), email.detectedTasks().isEmpty() ? "Follow up on email" : email.detectedTasks().getFirst(), 0.94),
-            new ExtractedTask(UUID.randomUUID().toString(), "Confirm execution owner", 0.82)
-        );
+        List<ExtractedTask> extractedTasks = emailAiService.extractTasks(email);
         for (ExtractedTask task : extractedTasks) {
             db.update(
                 "INSERT INTO aieap.extracted_tasks (id, email_id, suggested_title, confidence, status) VALUES (?::uuid, ?::uuid, ?, ?, 'PENDING_REVIEW')",
@@ -126,13 +135,14 @@ public class EmailController {
     private EmailItem email(String id) {
         JdbcTemplate db = requireJdbc();
         List<EmailItem> rows = db.query(
-            "SELECT id::text AS id, sender_name, sender_email, subject, ai_summary, processing_status, priority, received_at " +
+            "SELECT id::text AS id, sender_name, sender_email, subject, body_text, ai_summary, processing_status, priority, received_at " +
             "FROM aieap.emails WHERE id = ?::uuid",
             (rs, rowNum) -> new EmailItem(
                 rs.getString("id"),
                 rs.getString("sender_name"),
                 rs.getString("sender_email"),
                 rs.getString("subject"),
+                rs.getString("body_text"),
                 rs.getString("ai_summary"),
                 loadExtractedTitles(rs.getString("id")),
                 rs.getString("processing_status"),
@@ -151,12 +161,13 @@ public class EmailController {
     private List<EmailItem> loadEmails() {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, sender_name, sender_email, subject, ai_summary, processing_status, priority, received_at FROM aieap.emails ORDER BY received_at DESC",
+            "SELECT id::text AS id, sender_name, sender_email, subject, body_text, ai_summary, processing_status, priority, received_at FROM aieap.emails ORDER BY received_at DESC",
             (rs, rowNum) -> new EmailItem(
                 rs.getString("id"),
                 rs.getString("sender_name"),
                 rs.getString("sender_email"),
                 rs.getString("subject"),
+                rs.getString("body_text"),
                 rs.getString("ai_summary"),
                 loadExtractedTitles(rs.getString("id")),
                 rs.getString("processing_status"),
@@ -191,10 +202,30 @@ public class EmailController {
         return jdbcTemplate;
     }
 
-    public record EmailItem(String id, String senderName, String senderEmail, String subject, String aiSummary, List<String> detectedTasks, String status, String priority, OffsetDateTime receivedAt) {
+    public record EmailItem(
+        String id,
+        String senderName,
+        String senderEmail,
+        String subject,
+        String bodyText,
+        String aiSummary,
+        List<String> detectedTasks,
+        String status,
+        String priority,
+        OffsetDateTime receivedAt
+    ) {
     }
 
-    public record IngestEmailRequest(String senderName, @Email @NotBlank String senderEmail, @NotBlank String subject, String aiSummary, String priority, OffsetDateTime receivedAt) {
+    public record IngestEmailRequest(
+        String senderName,
+        @Email @NotBlank String senderEmail,
+        @NotBlank String subject,
+        String bodyText,
+        String bodyHtml,
+        String aiSummary,
+        String priority,
+        OffsetDateTime receivedAt
+    ) {
     }
 
     public record ExtractedTask(String id, String title, double confidence) {
