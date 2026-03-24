@@ -1,16 +1,13 @@
-package com.aieap.platform.document;
+package com.aieap.platform.ai;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
-import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class QdrantVectorStoreClient {
@@ -22,7 +19,9 @@ public class QdrantVectorStoreClient {
 
     public QdrantVectorStoreClient(RestClient.Builder restClientBuilder, QdrantProperties properties) {
         this.properties = properties;
-        this.restClient = restClientBuilder.baseUrl(Objects.requireNonNull(properties.getBaseUrl(), "qdrant.base-url must be configured")).build();
+        this.restClient = restClientBuilder
+            .baseUrl(Objects.requireNonNull(properties.getBaseUrl(), "qdrant.base-url must be configured"))
+            .build();
     }
 
     public boolean isAvailable() {
@@ -34,44 +33,6 @@ public class QdrantVectorStoreClient {
             return response != null;
         } catch (Exception ex) {
             return false;
-        }
-    }
-
-    public void ensureCollection(int vectorSize) {
-        int size = vectorSize > 0 ? vectorSize : properties.getVectorSize();
-        Map<String, Object> payload = Map.of(
-            "vectors", Map.of(
-                "size", size,
-                "distance", "Cosine"
-            )
-        );
-
-        try {
-            restClient.put()
-                .uri("/collections/" + properties.getCollection())
-                .body(Objects.requireNonNull(payload))
-                .retrieve()
-                .toBodilessEntity();
-        } catch (RestClientException ex) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to ensure Qdrant collection", ex);
-        }
-    }
-
-    public void upsertPoint(String pointId, List<Double> vector, Map<String, Object> payload) {
-        Map<String, Object> point = new LinkedHashMap<>();
-        point.put("id", pointId);
-        point.put("vector", vector);
-        point.put("payload", payload);
-
-        Map<String, Object> body = Map.of("points", List.of(point));
-        try {
-            restClient.put()
-                .uri("/collections/" + properties.getCollection() + "/points?wait=true")
-                .body(Objects.requireNonNull(body))
-                .retrieve()
-                .toBodilessEntity();
-        } catch (RestClientException ex) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to upsert Qdrant point", ex);
         }
     }
 
@@ -93,13 +54,12 @@ public class QdrantVectorStoreClient {
         try {
             Map<String, Object> response = restClient.post()
                 .uri("/collections/" + properties.getCollection() + "/points/search")
-                .body(Objects.requireNonNull(body))
+                .body(body)
                 .retrieve()
                 .body(Objects.requireNonNull(MAP_TYPE));
-
             return extractPointIds(response);
         } catch (RestClientException ex) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to query Qdrant", ex);
+            return List.of();
         }
     }
 

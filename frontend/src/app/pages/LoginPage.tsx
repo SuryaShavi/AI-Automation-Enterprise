@@ -6,8 +6,8 @@ import { useSession } from "../auth/session";
 export default function LoginPage() {
   const navigate = useNavigate();
   const { isAuthenticated, login } = useSession();
-  const [email, setEmail] = useState('admin@aieap.local');
-  const [password, setPassword] = useState('ChangeMe123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +80,7 @@ export default function LoginPage() {
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                 <input
                   type="email"
-                  placeholder="admin@aieap.local"
+                  placeholder="you@company.com"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"

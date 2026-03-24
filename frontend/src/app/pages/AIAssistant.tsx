@@ -6,9 +6,13 @@ import type { AttachmentReceipt, ChatMessage, ChatReply, ChatSummary } from "../
 
 function createLocalChatId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `chat-${crypto.randomUUID()}`;
+    return crypto.randomUUID();
   }
-  return `chat-${Date.now()}`;
+  // Fallback UUID v4 generation (minimal implementation)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
 
 export default function AIAssistant() {

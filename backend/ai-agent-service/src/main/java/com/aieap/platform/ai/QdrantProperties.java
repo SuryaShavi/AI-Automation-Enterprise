@@ -1,4 +1,4 @@
-package com.aieap.platform.document;
+package com.aieap.platform.ai;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

@@ -1,0 +1,27 @@
+{
+  "properties": [
+    {
+      "name": "ai.provider.base-url",
+      "type": "java.lang.String",
+      "description": "Base URL for the OpenAI-compatible LLM provider (e.g. http://localhost:11434/v1).",
+      "defaultValue": "https://api.openai.com/v1"
+    },
+    {
+      "name": "ai.provider.api-key",
+      "type": "java.lang.String",
+      "description": "API key for the LLM provider. Required for production providers."
+    },
+    {
+      "name": "ai.provider.model",
+      "type": "java.lang.String",
+      "description": "Default chat/completion model name.",
+      "defaultValue": "gpt-4o-mini"
+    },
+    {
+      "name": "ai.provider.embedding-model",
+      "type": "java.lang.String",
+      "description": "Embedding model name. Falls back to ai.provider.model when not set.",
+      "defaultValue": "text-embedding-3-small"
+    }
+  ]
+}

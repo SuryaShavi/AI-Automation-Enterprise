@@ -12,6 +12,13 @@ spring:
     hikari:
       connection-timeout: 5000
       initialization-fail-timeout: -1
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        '[format_sql]': true
 
 springdoc:
   swagger-ui:
@@ -23,9 +30,31 @@ management:
       exposure:
         include: health,info
 
+security:
+  jwt:
+    secret: ${SECURITY_JWT_SECRET:ChangeThisSecretForLocalDev1234567890!}
+    issuer: ${SECURITY_JWT_ISSUER:http://localhost:8080}
+    access-token-ttl-minutes: ${SECURITY_JWT_ACCESS_TOKEN_TTL_MINUTES:15}
+    refresh-token-ttl-days: ${SECURITY_JWT_REFRESH_TOKEN_TTL_DAYS:7}
+
 ai:
   provider:
     base-url: ${AI_PROVIDER_BASE_URL:http://localhost:11434/v1}
     api-key: ${AI_PROVIDER_API_KEY:ollama}
     model: ${AI_PROVIDER_MODEL:llama3.2}
     embedding-model: ${AI_PROVIDER_EMBEDDING_MODEL:nomic-embed-text}
+    connect-timeout-ms: ${AI_PROVIDER_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${AI_PROVIDER_READ_TIMEOUT_MS:90000}
+    max-retries: ${AI_PROVIDER_MAX_RETRIES:2}
+    retry-backoff-ms: ${AI_PROVIDER_RETRY_BACKOFF_MS:750}
+    max-prompt-chars: ${AI_PROVIDER_MAX_PROMPT_CHARS:12000}
+    max-context-chars: ${AI_PROVIDER_MAX_CONTEXT_CHARS:6000}
+    max-output-tokens: ${AI_PROVIDER_MAX_OUTPUT_TOKENS:700}
+    planner-max-output-tokens: ${AI_PROVIDER_PLANNER_MAX_OUTPUT_TOKENS:180}
+    max-history-messages: ${AI_PROVIDER_MAX_HISTORY_MESSAGES:8}
+    max-context-chunks: ${AI_PROVIDER_MAX_CONTEXT_CHUNKS:6}
+
+qdrant:
+  base-url: ${QDRANT_BASE_URL:http://localhost:6333}
+  collection: ${QDRANT_COLLECTION:aieap-documents}
+  vector-size: ${QDRANT_VECTOR_SIZE:768}

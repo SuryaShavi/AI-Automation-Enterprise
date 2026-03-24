@@ -1,0 +1,27 @@
+{
+  "properties": [
+    {
+      "name": "security.jwt.secret",
+      "type": "java.lang.String",
+      "description": "HMAC-SHA256 signing secret used to validate incoming JWT tokens. Must match the auth-service secret."
+    },
+    {
+      "name": "security.jwt.issuer",
+      "type": "java.lang.String",
+      "description": "Expected JWT issuer claim (iss). Must match the auth-service issuer.",
+      "defaultValue": "aieap-auth-service"
+    },
+    {
+      "name": "security.jwt.access-token-ttl-minutes",
+      "type": "java.lang.Long",
+      "description": "Access token TTL in minutes (used for resource-server clock-skew tolerance).",
+      "defaultValue": 15
+    },
+    {
+      "name": "security.jwt.refresh-token-ttl-days",
+      "type": "java.lang.Long",
+      "description": "Refresh token TTL in days.",
+      "defaultValue": 7
+    }
+  ]
+}

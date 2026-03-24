@@ -18,7 +18,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -257,26 +256,7 @@ public class AuthController {
     }
 
     private void seedUsers() {
-        if (!loadUsersFromDatabase()) {
-            Set<String> adminRoles = ConcurrentHashMap.newKeySet();
-            adminRoles.add("ADMIN");
-            register(new ManagedUser(
-                UUID.fromString("10000000-0000-0000-0000-000000000001"),
-                "admin@aieap.local", "Ava", "Admin",
-                passwordEncoder.encode("ChangeMe123!"),
-                adminRoles,
-                new ConcurrentHashMap<>(Map.of("theme", "light", "locale", "en-IN", "dashboardLayout", "executive")),
-                true, Instant.now()));
-            Set<String> empRoles = ConcurrentHashMap.newKeySet();
-            empRoles.add("EMPLOYEE");
-            register(new ManagedUser(
-                UUID.fromString("10000000-0000-0000-0000-000000000002"),
-                "employee@aieap.local", "Evan", "Employee",
-                passwordEncoder.encode("ChangeMe123!"),
-                empRoles,
-                new ConcurrentHashMap<>(Map.of("theme", "light", "locale", "en-US", "dashboardLayout", "personal")),
-                false, Instant.now()));
-        }
+        loadUsersFromDatabase();
     }
 
     private boolean emailExistsInDatabase(String email) {

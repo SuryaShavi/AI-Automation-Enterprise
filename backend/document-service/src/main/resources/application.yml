@@ -33,4 +33,4 @@ ai:
 qdrant:
   base-url: ${QDRANT_BASE_URL:http://localhost:6333}
   collection: ${QDRANT_COLLECTION:aieap-documents}
-  vector-size: ${QDRANT_VECTOR_SIZE:3072}
+  vector-size: ${QDRANT_VECTOR_SIZE:768}

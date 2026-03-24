@@ -1,0 +1,2 @@
+-- Intentionally left blank.
+-- Default prompt templates were removed so environments start without seeded templates.

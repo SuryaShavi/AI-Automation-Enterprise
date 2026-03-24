@@ -2,7 +2,6 @@ package com.aieap.platform.workflow;
 
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.ResponseFactory;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -77,6 +76,31 @@ public class WorkflowController {
         return ResponseFactory.success(request, workflow(id));
     }
 
+    @PatchMapping("/workflows/{id}")
+    @Transactional
+    public ApiEnvelope<WorkflowItem> update(@PathVariable String id, @Valid @RequestBody WorkflowUpdateRequest workflowUpdateRequest, HttpServletRequest request) {
+        JdbcTemplate db = requireJdbc();
+        
+        // Update status if provided
+        if (workflowUpdateRequest.status() != null) {
+            String nextStatus = workflowUpdateRequest.status().toUpperCase();
+            if (!"ACTIVE".equals(nextStatus) && !"PAUSED".equals(nextStatus) && !"DRAFT".equals(nextStatus)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be DRAFT, ACTIVE, or PAUSED");
+            }
+            int updated = db.update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", nextStatus, id);
+            if (updated == 0) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
+            }
+        }
+        
+        // Update name if provided
+        if (workflowUpdateRequest.name() != null && !workflowUpdateRequest.name().isBlank()) {
+            db.update("UPDATE aieap.workflows SET name = ?, updated_at = NOW() WHERE id = ?::uuid", workflowUpdateRequest.name(), id);
+        }
+        
+        return ResponseFactory.success(request, workflow(id));
+    }
+    
     @PatchMapping("/workflows/{id}/status")
     @Transactional
     public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable String id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, HttpServletRequest request) {
@@ -305,6 +329,9 @@ public class WorkflowController {
     }
 
     public record WorkflowStatusRequest(@NotBlank String status) {
+    }
+
+    public record WorkflowUpdateRequest(String status, String name) {
     }
 
     public record IntegrationItem(String provider, String status, String authType, OffsetDateTime connectedAt) {

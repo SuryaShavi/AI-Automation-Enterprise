@@ -5,9 +5,9 @@ spring:
   application:
     name: auth-service
   datasource:
-    url: jdbc:postgresql://localhost:5432/aieap
-    username: aieap
-    password: aieap
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/aieap}
+    username: ${SPRING_DATASOURCE_USERNAME:aieap}
+    password: ${SPRING_DATASOURCE_PASSWORD:aieap}
     driver-class-name: org.postgresql.Driver
     hikari:
       connection-timeout: 5000
@@ -15,10 +15,10 @@ spring:
 
 security:
   jwt:
-    issuer: aieap-auth-service
-    secret: ChangeThisSecretForLocalDev1234567890!
-    access-token-ttl-minutes: 15
-    refresh-token-ttl-days: 14
+    issuer: ${SECURITY_JWT_ISSUER:aieap-auth-service}
+    secret: ${SECURITY_JWT_SECRET:ChangeThisSecretForLocalDev1234567890!}
+    access-token-ttl-minutes: ${SECURITY_JWT_ACCESS_TOKEN_TTL_MINUTES:15}
+    refresh-token-ttl-days: ${SECURITY_JWT_REFRESH_TOKEN_TTL_DAYS:14}
 
 springdoc:
   swagger-ui:

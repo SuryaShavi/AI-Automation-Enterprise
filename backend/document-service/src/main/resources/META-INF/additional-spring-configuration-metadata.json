@@ -1,0 +1,22 @@
+{
+  "properties": [
+    {
+      "name": "qdrant.base-url",
+      "type": "java.lang.String",
+      "description": "Base URL for the Qdrant vector database REST API.",
+      "defaultValue": "http://localhost:6333"
+    },
+    {
+      "name": "qdrant.collection",
+      "type": "java.lang.String",
+      "description": "Name of the Qdrant collection used to store document embeddings.",
+      "defaultValue": "aieap-documents"
+    },
+    {
+      "name": "qdrant.vector-size",
+      "type": "java.lang.Integer",
+      "description": "Vector dimension that must match the embedding model output size.",
+      "defaultValue": 3072
+    }
+  ]
+}

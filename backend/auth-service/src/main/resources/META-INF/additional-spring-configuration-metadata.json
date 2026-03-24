@@ -1,0 +1,27 @@
+{
+  "properties": [
+    {
+      "name": "security.jwt.secret",
+      "type": "java.lang.String",
+      "description": "HMAC-SHA256 signing secret for JWT tokens. Override via SECURITY_JWT_SECRET environment variable."
+    },
+    {
+      "name": "security.jwt.issuer",
+      "type": "java.lang.String",
+      "description": "JWT token issuer claim (iss). Override via SECURITY_JWT_ISSUER environment variable.",
+      "defaultValue": "aieap-auth-service"
+    },
+    {
+      "name": "security.jwt.access-token-ttl-minutes",
+      "type": "java.lang.Long",
+      "description": "Access token time-to-live in minutes.",
+      "defaultValue": 15
+    },
+    {
+      "name": "security.jwt.refresh-token-ttl-days",
+      "type": "java.lang.Long",
+      "description": "Refresh token time-to-live in days.",
+      "defaultValue": 14
+    }
+  ]
+}
