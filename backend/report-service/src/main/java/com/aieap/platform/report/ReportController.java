@@ -3,6 +3,8 @@ package com.aieap.platform.report;
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.report.kafka.KafkaEventPublisher;
+import com.aieap.platform.report.kafka.events.ReportGeneratedEvent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -37,6 +39,9 @@ public class ReportController {
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
+
     public ReportController(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
@@ -60,11 +65,23 @@ public class ReportController {
 
     @GetMapping("/dashboard/activity")
     public ApiEnvelope<List<Map<String, String>>> activity(HttpServletRequest request) {
-        return ResponseFactory.success(request, List.of(
-            Map.of("type", "task.created", "description", "New task assigned: Review Q1 report", "occurredAt", OffsetDateTime.now().minusMinutes(12).toString()),
-            Map.of("type", "document.uploaded", "description", "Annual_Report_2024.pdf uploaded", "occurredAt", OffsetDateTime.now().minusMinutes(30).toString()),
-            Map.of("type", "report.generated", "description", "Weekly productivity report is ready", "occurredAt", OffsetDateTime.now().minusHours(1).toString())
-        ));
+        JdbcTemplate db = requireJdbc();
+        List<Map<String, String>> items = db.query(
+            "SELECT type, description, occurred_at FROM (" +
+                " SELECT 'task.created' AS type, CONCAT('New task assigned: ', title) AS description, created_at AS occurred_at FROM aieap.tasks" +
+                " UNION ALL " +
+                " SELECT 'document.uploaded' AS type, CONCAT(file_name, ' uploaded') AS description, created_at AS occurred_at FROM aieap.documents" +
+                " UNION ALL " +
+                " SELECT 'report.generated' AS type, CONCAT(title, ' is ready') AS description, COALESCE(generated_at, requested_at) AS occurred_at" +
+                " FROM aieap.reports WHERE status = 'GENERATED' OR generated_at IS NOT NULL" +
+            ") activity ORDER BY occurred_at DESC LIMIT 10",
+            (rs, rowNum) -> Map.of(
+                "type", rs.getString("type"),
+                "description", rs.getString("description"),
+                "occurredAt", rs.getObject("occurred_at", OffsetDateTime.class).toString()
+            )
+        );
+        return ResponseFactory.success(request, items);
     }
 
     @GetMapping("/health/services")
@@ -94,18 +111,40 @@ public class ReportController {
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        String targetUserId = resolveFirstActiveUserId();
         String id = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
         String payload = toJson(generateReportRequest.parameters() == null ? Map.of() : generateReportRequest.parameters());
         db.update(
-            "INSERT INTO aieap.reports (id, report_type, title, status, request_payload, requested_at) VALUES (?::uuid, ?, ?, 'REQUESTED', ?::jsonb, NOW()) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO aieap.reports (id, owner_user_id, report_type, title, status, request_payload, requested_at) VALUES (?::uuid, ?::uuid, ?, ?, 'REQUESTED', ?::jsonb, NOW()) ON CONFLICT (id) DO NOTHING",
             id,
+            targetUserId,
             generateReportRequest.reportType(),
             generateReportRequest.title(),
             payload
         );
         ReportItem report = report(id);
+        if (kafkaEventPublisher != null) {
+            String correlationId = request.getHeader("X-Correlation-ID") != null
+                ? request.getHeader("X-Correlation-ID")
+                : UUID.randomUUID().toString();
+            kafkaEventPublisher.publish(
+                "report.generated",
+                id,
+                new ReportGeneratedEvent(
+                    UUID.randomUUID().toString(),
+                    correlationId,
+                    targetUserId,
+                    id,
+                    generateReportRequest.reportType(),
+                    generateReportRequest.title(),
+                    report.status(),
+                    OffsetDateTime.now().toString()
+                ),
+                correlationId
+            );
+        }
         return ResponseFactory.success(request, report);
     }
 
@@ -184,6 +223,15 @@ public class ReportController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
         }
         return jdbcTemplate;
+    }
+
+    private String resolveFirstActiveUserId() {
+        JdbcTemplate db = requireJdbc();
+        List<String> rows = db.query(
+            "SELECT id::text FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
+            (rs, rowNum) -> rs.getString(1)
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     public record ReportItem(String id, String reportType, String title, String status, OffsetDateTime requestedAt, Map<String, Object> payload) {

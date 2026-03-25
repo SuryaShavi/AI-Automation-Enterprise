@@ -128,36 +128,42 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white rounded-xl p-6 shadow-sm border border-gray-100">
               <h2 className="text-xl font-bold text-gray-800 mb-4">Activity Feed</h2>
-              <div className="space-y-4">
-                {activities.map((activity) => {
-                  const Icon = activity.type.includes("task")
-                    ? CheckSquare
-                    : activity.type.includes("document")
-                      ? FileText
-                      : activity.type.includes("report")
-                        ? TrendingUp
-                        : MessageSquare;
+              {activities.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-10 text-center text-sm text-gray-500">
+                  No recent activity yet.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {activities.map((activity) => {
+                    const Icon = activity.type.includes("task")
+                      ? CheckSquare
+                      : activity.type.includes("document")
+                        ? FileText
+                        : activity.type.includes("report")
+                          ? TrendingUp
+                          : MessageSquare;
 
-                  const color = activity.type.includes("task")
-                    ? "text-blue-500"
-                    : activity.type.includes("document")
-                      ? "text-purple-500"
-                      : activity.type.includes("report")
-                        ? "text-green-500"
-                        : "text-indigo-500";
+                    const color = activity.type.includes("task")
+                      ? "text-blue-500"
+                      : activity.type.includes("document")
+                        ? "text-purple-500"
+                        : activity.type.includes("report")
+                          ? "text-green-500"
+                          : "text-indigo-500";
 
-                  return (
-                    <div key={`${activity.type}-${activity.occurredAt}`} className="flex items-start gap-4 p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                      <Icon size={20} className={color} />
-                      <div className="flex-1">
-                        <p className="font-medium text-gray-800">{activity.type}</p>
-                        <p className="text-sm text-gray-600">{activity.description}</p>
+                    return (
+                      <div key={`${activity.type}-${activity.occurredAt}`} className="flex items-start gap-4 p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                        <Icon size={20} className={color} />
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-800">{activity.type}</p>
+                          <p className="text-sm text-gray-600">{activity.description}</p>
+                        </div>
+                        <span className="text-xs text-gray-500">{formatRelativeTime(activity.occurredAt)}</span>
                       </div>
-                      <span className="text-xs text-gray-500">{formatRelativeTime(activity.occurredAt)}</span>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="space-y-6">
@@ -176,20 +182,26 @@ export default function Dashboard() {
 
               <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
                 <h2 className="text-xl font-bold text-gray-800 mb-4">Recent Notifications</h2>
-                <div className="space-y-3">
-                  {notifications.map((notification) => (
-                    <div key={notification.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
-                      <AlertCircle
-                        size={16}
-                        className={notification.read ? "text-blue-500" : "text-red-500"}
-                      />
-                      <div className="flex-1">
-                        <p className="text-sm text-gray-800">{notification.message}</p>
-                        <p className="text-xs text-gray-500 mt-1">{formatRelativeTime(notification.createdAt)}</p>
+                {notifications.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
+                    No notifications yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {notifications.map((notification) => (
+                      <div key={notification.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                        <AlertCircle
+                          size={16}
+                          className={notification.read ? "text-blue-500" : "text-red-500"}
+                        />
+                        <div className="flex-1">
+                          <p className="text-sm text-gray-800">{notification.message}</p>
+                          <p className="text-xs text-gray-500 mt-1">{formatRelativeTime(notification.createdAt)}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">

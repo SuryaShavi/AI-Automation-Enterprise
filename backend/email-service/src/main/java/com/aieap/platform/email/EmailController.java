@@ -3,6 +3,9 @@ package com.aieap.platform.email;
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.email.kafka.KafkaEventPublisher;
+import com.aieap.platform.email.kafka.events.EmailIngestedEvent;
+import com.aieap.platform.email.kafka.events.ExtractedTaskCreatedEvent;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -38,6 +41,9 @@ public class EmailController {
 
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
 
     public EmailController(EmailAiService emailAiService) {
         this.emailAiService = emailAiService;
@@ -96,6 +102,28 @@ public class EmailController {
             receivedAt
         );
         EmailItem email = email(id);
+        if (kafkaEventPublisher != null) {
+            String correlationId = request.getHeader("X-Correlation-ID") != null
+                ? request.getHeader("X-Correlation-ID")
+                : UUID.randomUUID().toString();
+            String targetUserId = resolveFirstActiveUserId();
+            kafkaEventPublisher.publish(
+                "new.email.ingested",
+                email.id(),
+                new EmailIngestedEvent(
+                    UUID.randomUUID().toString(),
+                    correlationId,
+                    targetUserId,
+                    email.id(),
+                    email.senderEmail(),
+                    email.senderName(),
+                    email.subject(),
+                    email.priority(),
+                    OffsetDateTime.now().toString()
+                ),
+                correlationId
+            );
+        }
         return ResponseFactory.success(request, email);
     }
 
@@ -110,11 +138,30 @@ public class EmailController {
         }
 
         List<ExtractedTask> extractedTasks = emailAiService.extractTasks(email);
+        String correlationId = request.getHeader("X-Correlation-ID") != null
+            ? request.getHeader("X-Correlation-ID")
+            : UUID.randomUUID().toString();
         for (ExtractedTask task : extractedTasks) {
             db.update(
                 "INSERT INTO aieap.extracted_tasks (id, email_id, suggested_title, confidence, status) VALUES (?::uuid, ?::uuid, ?, ?, 'PENDING_REVIEW')",
                 task.id(), id, task.title(), BigDecimal.valueOf(task.confidence())
             );
+            if (kafkaEventPublisher != null) {
+                kafkaEventPublisher.publish(
+                    "extracted.task.created",
+                    task.id(),
+                    new ExtractedTaskCreatedEvent(
+                        UUID.randomUUID().toString(),
+                        correlationId,
+                        id,
+                        task.id(),
+                        task.title(),
+                        task.confidence(),
+                        OffsetDateTime.now().toString()
+                    ),
+                    correlationId
+                );
+            }
         }
         return ResponseFactory.success(request, new ExtractTaskResponse(id, extractedTasks));
     }
@@ -200,6 +247,15 @@ public class EmailController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
         }
         return jdbcTemplate;
+    }
+
+    private String resolveFirstActiveUserId() {
+        JdbcTemplate db = requireJdbc();
+        List<String> rows = db.query(
+            "SELECT id::text FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
+            (rs, rowNum) -> rs.getString(1)
+        );
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     public record EmailItem(

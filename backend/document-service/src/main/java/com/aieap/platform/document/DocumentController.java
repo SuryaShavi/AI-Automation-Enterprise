@@ -4,6 +4,8 @@ import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.ai.LlmClient;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.document.kafka.KafkaEventPublisher;
+import com.aieap.platform.document.kafka.events.DocumentChunksReadyEvent;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -58,6 +60,9 @@ public class DocumentController {
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
+
     @PostMapping(path = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
@@ -106,6 +111,26 @@ public class DocumentController {
         indexChunksInVectorStore(id, chunkIds, processed.chunks());
 
         DocumentItem document = document(id);
+        if (kafkaEventPublisher != null) {
+            String correlationId = request.getHeader("X-Correlation-ID") != null
+                ? request.getHeader("X-Correlation-ID")
+                : java.util.UUID.randomUUID().toString();
+            kafkaEventPublisher.publish(
+                "document.chunks.ready",
+                id,
+                new DocumentChunksReadyEvent(
+                    java.util.UUID.randomUUID().toString(),
+                    correlationId,
+                    id,
+                    fileName,
+                    chunkIds.size(),
+                    processed.chunks().isEmpty() ? "UPLOADED" : "RAG_READY",
+                    ownerUserId,
+                    java.time.OffsetDateTime.now().toString()
+                ),
+                correlationId
+            );
+        }
         return ResponseFactory.success(request, document);
     }
 

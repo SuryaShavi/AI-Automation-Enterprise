@@ -2,6 +2,8 @@ package com.aieap.platform.workflow;
 
 import com.aieap.platform.common.ApiEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.workflow.kafka.KafkaEventPublisher;
+import com.aieap.platform.workflow.kafka.events.WorkflowStateChangedEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,6 +37,9 @@ public class WorkflowController {
 
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
 
     public WorkflowController(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
@@ -87,9 +92,31 @@ public class WorkflowController {
             if (!"ACTIVE".equals(nextStatus) && !"PAUSED".equals(nextStatus) && !"DRAFT".equals(nextStatus)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be DRAFT, ACTIVE, or PAUSED");
             }
+            WorkflowItem before = workflow(id);
             int updated = db.update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", nextStatus, id);
             if (updated == 0) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
+            }
+            if (kafkaEventPublisher != null) {
+                String correlationId = request.getHeader("X-Correlation-ID") != null
+                    ? request.getHeader("X-Correlation-ID")
+                    : UUID.randomUUID().toString();
+                String targetUserId = resolveFirstActiveUserId();
+                kafkaEventPublisher.publish(
+                    "workflow.state_changed",
+                    id,
+                    new WorkflowStateChangedEvent(
+                        UUID.randomUUID().toString(),
+                        correlationId,
+                        targetUserId,
+                        id,
+                        before.name(),
+                        before.status(),
+                        nextStatus,
+                        OffsetDateTime.now().toString()
+                    ),
+                    correlationId
+                );
             }
         }
         
@@ -109,11 +136,34 @@ public class WorkflowController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Status must be ACTIVE or PAUSED");
         }
         JdbcTemplate db = requireJdbc();
+        WorkflowItem before = workflow(id);
         int updated = db.update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", nextStatus, id);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
         }
-        return ResponseFactory.success(request, workflow(id));
+        WorkflowItem after = workflow(id);
+        if (kafkaEventPublisher != null) {
+            String correlationId = request.getHeader("X-Correlation-ID") != null
+                ? request.getHeader("X-Correlation-ID")
+                : UUID.randomUUID().toString();
+            String targetUserId = resolveFirstActiveUserId();
+            kafkaEventPublisher.publish(
+                "workflow.state_changed",
+                id,
+                new WorkflowStateChangedEvent(
+                    UUID.randomUUID().toString(),
+                    correlationId,
+                    targetUserId,
+                    id,
+                    before.name(),
+                    before.status(),
+                    nextStatus,
+                    OffsetDateTime.now().toString()
+                ),
+                correlationId
+            );
+        }
+        return ResponseFactory.success(request, after);
     }
 
     @DeleteMapping("/workflows/{id}")
@@ -305,6 +355,14 @@ public class WorkflowController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "No active user available for workflow integrations");
         }
         return userId;
+    }
+
+    private String resolveFirstActiveUserId() {
+        JdbcTemplate db = requireJdbc();
+        return db.query(
+            "SELECT id::text AS id FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
+            rs -> rs.next() ? rs.getString("id") : null
+        );
     }
 
     private String toJson(Map<String, Object> payload) {
