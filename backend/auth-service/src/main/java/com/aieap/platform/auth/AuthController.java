@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,8 +65,22 @@ public class AuthController {
     @PostMapping("/auth/login")
     public ApiEnvelope<LoginResponse> login(@Valid @RequestBody LoginRequest request,
                                              HttpServletRequest servletRequest) {
-        ManagedUser user = usersByEmail.get(request.email().toLowerCase());
-        if (user == null || !passwordEncoder.matches(request.password(), user.passwordHash)) {
+        String email = request.email().toLowerCase().trim();
+        ManagedUser user = resolveUserByEmail(email);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+        }
+
+        boolean passwordMatches = passwordEncoder.matches(request.password(), user.passwordHash);
+        if (!passwordMatches) {
+            ManagedUser freshUser = loadUserByEmailFromDatabase(email);
+            if (freshUser != null) {
+                user = freshUser;
+                passwordMatches = passwordEncoder.matches(request.password(), user.passwordHash);
+            }
+        }
+
+        if (!passwordMatches) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
         }
         user.lastLoginAt = Instant.now();
@@ -82,7 +97,7 @@ public class AuthController {
                                                HttpServletRequest servletRequest) {
         Jwt jwt = decodeAndValidate(request.refreshToken(), "refresh");
         revokedTokenIds.add(jwt.getId());
-        ManagedUser user = usersByEmail.get(jwt.getSubject().toLowerCase());
+        ManagedUser user = resolveUserByEmail(jwt.getSubject().toLowerCase().trim());
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
         }
@@ -234,6 +249,16 @@ public class AuthController {
     private ManagedUser currentUser(JwtAuthenticationToken authentication) {
         ManagedUser user = usersById.get(authentication.getToken().getClaimAsString("userId"));
         if (user == null) {
+            String userIdClaim = authentication.getToken().getClaimAsString("userId");
+            if (userIdClaim != null && !userIdClaim.isBlank()) {
+                try {
+                    user = loadUserByIdFromDatabase(UUID.fromString(userIdClaim));
+                } catch (IllegalArgumentException ignored) {
+                    // Fall through to unauthorized response.
+                }
+            }
+        }
+        if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
         }
         return user;
@@ -257,6 +282,14 @@ public class AuthController {
 
     private void seedUsers() {
         loadUsersFromDatabase();
+    }
+
+    private ManagedUser resolveUserByEmail(String email) {
+        ManagedUser cached = usersByEmail.get(email);
+        if (cached != null) {
+            return cached;
+        }
+        return loadUserByEmailFromDatabase(email);
     }
 
     private boolean emailExistsInDatabase(String email) {
@@ -372,6 +405,84 @@ public class AuthController {
         }
     }
 
+    private ManagedUser loadUserByEmailFromDatabase(String email) {
+        if (jdbcTemplate == null || email == null || email.isBlank()) {
+            return null;
+        }
+        try {
+            return jdbcTemplate.query(
+                "SELECT u.id, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
+                "STRING_AGG(r.code, ',') AS roles " +
+                "FROM aieap.users u " +
+                "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
+                "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
+                "WHERE u.status = 'ACTIVE' AND lower(u.email) = ? " +
+                "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    ManagedUser loaded = mapManagedUser(rs);
+                    register(loaded);
+                    return loaded;
+                },
+                email.toLowerCase().trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private ManagedUser loadUserByIdFromDatabase(UUID userId) {
+        if (jdbcTemplate == null || userId == null) {
+            return null;
+        }
+        try {
+            return jdbcTemplate.query(
+                "SELECT u.id, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
+                "STRING_AGG(r.code, ',') AS roles " +
+                "FROM aieap.users u " +
+                "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
+                "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
+                "WHERE u.status = 'ACTIVE' AND u.id = ?::uuid " +
+                "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    ManagedUser loaded = mapManagedUser(rs);
+                    register(loaded);
+                    return loaded;
+                },
+                userId.toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private ManagedUser mapManagedUser(java.sql.ResultSet rs) throws java.sql.SQLException {
+        UUID id = UUID.fromString(rs.getString("id"));
+        String email = Objects.requireNonNullElse(rs.getString("email"), "").toLowerCase();
+        String firstName = rs.getString("first_name");
+        String lastName = rs.getString("last_name");
+        String passwordHash = rs.getString("password_hash");
+        boolean twoFactorEnabled = rs.getBoolean("two_factor_enabled");
+        Timestamp lastLoginTs = rs.getTimestamp("last_login_at");
+        Instant lastLoginAt = lastLoginTs != null ? lastLoginTs.toInstant() : Instant.now();
+        String rolesStr = rs.getString("roles");
+        Set<String> roles = ConcurrentHashMap.newKeySet();
+        if (rolesStr != null && !rolesStr.isBlank()) {
+            roles.addAll(Arrays.asList(rolesStr.split(",")));
+        }
+        if (roles.isEmpty()) {
+            roles.add("EMPLOYEE");
+        }
+        Map<String, String> preferences = parsePreferencesJson(rs.getString("preferences_json"));
+        return new ManagedUser(id, email, firstName, lastName, passwordHash,
+            roles, new ConcurrentHashMap<>(preferences), twoFactorEnabled, lastLoginAt);
+    }
+
     private boolean loadUsersFromDatabase() {
         if (jdbcTemplate == null) return false;
         try {
@@ -386,23 +497,7 @@ public class AuthController {
                 "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
                 (ResultSetExtractor<Void>) rs -> {
                     while (rs.next()) {
-                        UUID id = UUID.fromString(rs.getString("id"));
-                        String email = rs.getString("email");
-                        String firstName = rs.getString("first_name");
-                        String lastName = rs.getString("last_name");
-                        String passwordHash = rs.getString("password_hash");
-                        boolean twoFactorEnabled = rs.getBoolean("two_factor_enabled");
-                        Timestamp lastLoginTs = rs.getTimestamp("last_login_at");
-                        Instant lastLoginAt = lastLoginTs != null ? lastLoginTs.toInstant() : Instant.now();
-                        String rolesStr = rs.getString("roles");
-                        Set<String> roles = ConcurrentHashMap.newKeySet();
-                        if (rolesStr != null && !rolesStr.isBlank()) {
-                            roles.addAll(Arrays.asList(rolesStr.split(",")));
-                        }
-                        if (roles.isEmpty()) roles.add("EMPLOYEE");
-                        Map<String, String> preferences = parsePreferencesJson(rs.getString("preferences_json"));
-                        ManagedUser dbUser = new ManagedUser(id, email, firstName, lastName, passwordHash,
-                            roles, new ConcurrentHashMap<>(preferences), twoFactorEnabled, lastLoginAt);
+                        ManagedUser dbUser = mapManagedUser(rs);
                         register(dbUser);
                     }
                     return null;
