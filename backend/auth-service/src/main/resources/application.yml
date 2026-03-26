@@ -13,6 +13,17 @@ spring:
       connection-timeout: 5000
       initialization-fail-timeout: -1
 
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
 security:
   jwt:
     issuer: ${SECURITY_JWT_ISSUER:aieap-auth-service}

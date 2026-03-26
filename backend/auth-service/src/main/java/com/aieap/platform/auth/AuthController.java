@@ -45,7 +45,7 @@ public class AuthController {
 
     private final ConcurrentHashMap<String, ManagedUser> usersByEmail = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ManagedUser> usersById = new ConcurrentHashMap<>();
-    private final Set<String> revokedTokenIds = ConcurrentHashMap.newKeySet();
+    private final TokenRevocationStore tokenRevocationStore;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
     private final ObjectMapper objectMapper;
@@ -53,10 +53,12 @@ public class AuthController {
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
-    public AuthController(PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService, ObjectMapper objectMapper) {
+    public AuthController(PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService,
+                           ObjectMapper objectMapper, TokenRevocationStore tokenRevocationStore) {
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
         this.objectMapper = objectMapper;
+        this.tokenRevocationStore = tokenRevocationStore;
         seedUsers();
     }
 
@@ -96,7 +98,7 @@ public class AuthController {
     public ApiEnvelope<LoginResponse> refresh(@Valid @RequestBody RefreshRequest request,
                                                HttpServletRequest servletRequest) {
         Jwt jwt = decodeAndValidate(request.refreshToken(), "refresh");
-        revokedTokenIds.add(jwt.getId());
+        tokenRevocationStore.revoke(jwt.getId());
         ManagedUser user = resolveUserByEmail(jwt.getSubject().toLowerCase().trim());
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
@@ -115,9 +117,9 @@ public class AuthController {
         JwtAuthenticationToken authentication,
         HttpServletRequest servletRequest) {
         Jwt refreshJwt = decodeAndValidate(request.refreshToken(), "refresh");
-        revokedTokenIds.add(refreshJwt.getId());
+        tokenRevocationStore.revoke(refreshJwt.getId());
         if (authentication != null && authentication.getToken() != null) {
-            revokedTokenIds.add(authentication.getToken().getId());
+            tokenRevocationStore.revoke(authentication.getToken().getId());
         }
         return ResponseFactory.success(servletRequest, Map.of("status", "revoked"));
     }
@@ -266,7 +268,7 @@ public class AuthController {
 
     private Jwt decodeAndValidate(String token, String expectedType) {
         Jwt jwt = jwtTokenService.decode(token);
-        if (revokedTokenIds.contains(jwt.getId())) {
+        if (tokenRevocationStore.isRevoked(jwt.getId())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token has been revoked");
         }
         if (!expectedType.equals(jwt.getClaimAsString("type"))) {

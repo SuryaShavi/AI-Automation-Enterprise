@@ -2,6 +2,8 @@ package com.aieap.platform.ai.service;
 
 import com.aieap.platform.ai.domain.PromptTemplate;
 import com.aieap.platform.ai.repository.PromptTemplateRepository;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +21,7 @@ public class PromptTemplateService {
         this.promptTemplateRepository = promptTemplateRepository;
     }
 
+    @CacheEvict(value = "prompt-templates", allEntries = true)
     public PromptTemplate createTemplate(String name, String category, String systemPrompt, String description) {
         PromptTemplate template = new PromptTemplate(name, category, systemPrompt);
         template.setDescription(description);
@@ -35,18 +38,21 @@ public class PromptTemplateService {
             .orElseThrow(() -> new IllegalArgumentException("Prompt template not found"));
     }
 
+    @Cacheable(value = "prompt-templates", key = "'all'", unless = "#result.isEmpty()")
     public List<PromptTemplateDto> getAllActiveTemplates() {
         return promptTemplateRepository.findAllActive().stream()
             .map(this::toDto)
             .collect(Collectors.toList());
     }
 
+    @Cacheable(value = "prompt-templates", key = "'cat:' + #category", unless = "#result.isEmpty()")
     public List<PromptTemplateDto> getTemplatesByCategory(String category) {
         return promptTemplateRepository.findByCategory(category).stream()
             .map(this::toDto)
             .collect(Collectors.toList());
     }
 
+    @CacheEvict(value = "prompt-templates", allEntries = true)
     public PromptTemplate updateTemplate(UUID id, String systemPrompt, String description) {
         PromptTemplate template = getTemplateById(id);
         
@@ -58,6 +64,7 @@ public class PromptTemplateService {
         return promptTemplateRepository.save(template);
     }
 
+    @CacheEvict(value = "prompt-templates", allEntries = true)
     public void deleteTemplate(UUID id) {
         PromptTemplate template = getTemplateById(id);
         template.setIsActive(false);

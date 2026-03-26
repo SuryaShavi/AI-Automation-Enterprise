@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: gateway-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
   cloud:
     gateway:
       globalcors:
@@ -27,6 +32,12 @@ spring:
           uri: http://localhost:8081
           predicates:
             - Path=/auth/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 5
+                redis-rate-limiter.burstCapacity: 10
+                key-resolver: "#{@ipKeyResolver}"
         - id: user-service
           uri: http://localhost:8081
           predicates:
@@ -43,6 +54,12 @@ spring:
           uri: http://localhost:8084
           predicates:
             - Path=/ai/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                key-resolver: "#{@ipKeyResolver}"
         - id: document-service
           uri: http://localhost:8085
           predicates:
