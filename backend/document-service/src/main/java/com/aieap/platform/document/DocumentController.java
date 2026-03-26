@@ -87,7 +87,7 @@ public class DocumentController {
             fileType,
             file.getSize(),
             storagePath,
-            processed.chunks().isEmpty() ? "UPLOADED" : "RAG_READY",
+            "UPLOADED",
             processed.summary()
         );
 
@@ -96,6 +96,7 @@ public class DocumentController {
             String content = processed.chunks().get(i);
             String chunkId = UUID.randomUUID().toString();
             chunkIds.add(chunkId);
+            String citationLabel = generateCitationLabel(fileName, i, 0);
             db.update(
                 "INSERT INTO aieap.document_chunks (id, document_id, chunk_index, content, token_count, vector_id, citation_label) VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?)",
                 chunkId,
@@ -104,11 +105,25 @@ public class DocumentController {
                 content,
                 estimateTokenCount(content),
                 null,
-                "upload-" + i
+                citationLabel
             );
         }
 
-        indexChunksInVectorStore(id, chunkIds, processed.chunks());
+        // Update status to INDEXING before async vector indexing
+        if (!processed.chunks().isEmpty()) {
+            db.update(
+                "UPDATE aieap.documents SET processing_status = ?, updated_at = NOW() WHERE id = ?::uuid",
+                "INDEXING",
+                id
+            );
+            indexChunksInVectorStore(id, chunkIds, processed.chunks());
+            // Update status to READY after successful indexing
+            db.update(
+                "UPDATE aieap.documents SET processing_status = ?, updated_at = NOW() WHERE id = ?::uuid",
+                "READY",
+                id
+            );
+        }
 
         DocumentItem document = document(id);
         if (kafkaEventPublisher != null) {
@@ -380,10 +395,29 @@ public class DocumentController {
     }
 
     private int estimateTokenCount(String content) {
-        if (content == null || content.isBlank()) {
-            return 0;
+        return documentRagService.estimateTokenCount(content);
+    }
+
+    /**
+     * Generate citation label with position information.
+     * Format: "source-index-position" (e.g., "upload-0-1234")
+     */
+    private String generateCitationLabel(String fileName, int chunkIndex, int charPosition) {
+        String sourcePrefix = extractSourcePrefix(fileName);
+        return sourcePrefix + "-" + chunkIndex + "-" + charPosition;
+    }
+
+    /**
+     * Extract source prefix from file name for better citation tracking.
+     * Examples: "report.pdf" → "report", "Q1_2024.docx" → "Q1_2024"
+     */
+    private String extractSourcePrefix(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return "upload";
         }
-        return content.trim().split("\\s+").length;
+        int dotIndex = fileName.lastIndexOf('.');
+        String prefix = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+        return prefix.replaceAll("[^a-zA-Z0-9_-]", "_");
     }
 
     public record DocumentItem(String id, String fileName, String fileType, long fileSize, String processingStatus, String summary, OffsetDateTime createdAt) {

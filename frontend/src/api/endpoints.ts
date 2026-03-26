@@ -60,7 +60,9 @@
     create: '/workflows',
     remove: (id: string) => `/workflows/${id}`,
     status: (id: string) => `/workflows/${id}/status`,
+    run: (id: string) => `/workflows/${id}/run`,
     executions: (id: string) => `/workflows/${id}/executions`,
+    events: '/workflows/events',
   },
   integrations: {
     list: '/integrations',

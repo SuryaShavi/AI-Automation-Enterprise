@@ -137,7 +137,11 @@ public class DocumentRagService {
         return false;
     }
 
-    private List<String> chunkText(String text, int chunkSize, int overlap) {
+    /**
+     * Chunk text with configurable size and overlap.
+     * Attempts to break at sentence boundaries when possible to maintain context.
+     */
+    public List<String> chunkText(String text, int chunkSize, int overlap) {
         List<String> chunks = new ArrayList<>();
         if (!StringUtils.hasText(text)) {
             return chunks;
@@ -147,14 +151,49 @@ public class DocumentRagService {
         int start = 0;
         while (start < normalized.length()) {
             int end = Math.min(start + chunkSize, normalized.length());
-            chunks.add(normalized.substring(start, end));
-            if (end == normalized.length()) {
+            
+            // Try to break at sentence boundary if not at end
+            if (end < normalized.length()) {
+                int lastPeriod = normalized.lastIndexOf(".", end);
+                int lastNewline = normalized.lastIndexOf("\n", end);
+                int breakPoint = Math.max(lastPeriod, lastNewline);
+                if (breakPoint > start + (chunkSize / 2)) {
+                    end = breakPoint + 1;
+                }
+            }
+            
+            chunks.add(normalized.substring(start, end).trim());
+            if (end >= normalized.length()) {
                 break;
             }
             start = Math.max(end - overlap, start + 1);
         }
 
         return chunks;
+    }
+
+    /**
+     * Estimate token count using OpenAI's tiktoken model approximation.
+     * Uses the heuristic: ~4 characters = 1 token
+     * This is a common approximation for English text and typical documentation.
+     */
+    public int estimateTokenCount(String content) {
+        if (content == null || content.isBlank()) {
+            return 0;
+        }
+        // Split by whitespace and punctuation to count tokens more accurately
+        // than character count alone
+        String[] tokens = content.trim().split("[\\s\\p{P}]+");
+        int wordTokens = tokens.length;
+        
+        // Add estimation for punctuation and special characters
+        int punctuationTokens = content.split("[\\p{P}]").length - 1;
+        
+        // Combine word tokens and punctuation, use ~4 char per token as baseline
+        int charBasedEstimate = Math.max(1, content.length() / 4);
+        
+        // Return the average of word-based and char-based estimates
+        return Math.max(1, (wordTokens + punctuationTokens + charBasedEstimate) / 2);
     }
 
     public record ProcessedDocument(String summary, List<String> chunks) {

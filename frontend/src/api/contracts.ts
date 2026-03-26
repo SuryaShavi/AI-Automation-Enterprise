@@ -186,13 +186,38 @@ export interface WorkflowItem {
   status: string;
   steps: string[];
   createdAt: string;
+  triggers: WorkflowTriggerItem[];
+}
+
+export interface WorkflowTriggerItem {
+  id: string;
+  type: string;
+  scheduleCron: string | null;
+  eventType: string | null;
+  provider: string | null;
+  enabled: boolean;
+  lastFiredAt: string | null;
+}
+
+export interface WorkflowStepResult {
+  index: number;
+  name: string;
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  message: string | null;
 }
 
 export interface WorkflowExecutionItem {
   executionId: string;
   status: string;
+  triggerType: string;
+  triggerLabel: string;
   startedAt: string;
+  completedAt: string | null;
   durationMs: number;
+  errorMessage: string | null;
+  stepResults: WorkflowStepResult[];
 }
 
 export interface IntegrationItem {
@@ -200,6 +225,7 @@ export interface IntegrationItem {
   status: string;
   authType: string;
   connectedAt: string | null;
+  webhookSecretConfigured: boolean;
 }
 
 export interface EmailStats {
