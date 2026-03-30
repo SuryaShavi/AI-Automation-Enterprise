@@ -57,9 +57,11 @@ management:
         include: health,info
 
 security:
+  enforce-https: ${SECURITY_ENFORCE_HTTPS:false}
   jwt:
     secret: ${SECURITY_JWT_SECRET:ChangeThisSecretForLocalDev1234567890!}
-    issuer: ${SECURITY_JWT_ISSUER:http://localhost:8080}
+    issuer: ${SECURITY_JWT_ISSUER:aieap-auth-service}
+    previous-secrets: ${SECURITY_JWT_PREVIOUS_SECRETS:}
     access-token-ttl-minutes: ${SECURITY_JWT_ACCESS_TOKEN_TTL_MINUTES:15}
     refresh-token-ttl-days: ${SECURITY_JWT_REFRESH_TOKEN_TTL_DAYS:7}
 
@@ -67,6 +69,7 @@ ai:
   provider:
     base-url: ${AI_PROVIDER_BASE_URL:http://localhost:11434/v1}
     api-key: ${AI_PROVIDER_API_KEY:ollama}
+    api-key-rotation: ${AI_PROVIDER_API_KEY_ROTATION:}
     model: ${AI_PROVIDER_MODEL:llama3.2}
     embedding-model: ${AI_PROVIDER_EMBEDDING_MODEL:nomic-embed-text}
     connect-timeout-ms: ${AI_PROVIDER_CONNECT_TIMEOUT_MS:5000}

@@ -38,3 +38,10 @@ management:
     web:
       exposure:
         include: health,info
+
+security:
+  enforce-https: ${SECURITY_ENFORCE_HTTPS:false}
+  jwt:
+    secret: ${SECURITY_JWT_SECRET:ChangeThisSecretForLocalDev1234567890!}
+    issuer: ${SECURITY_JWT_ISSUER:aieap-auth-service}
+    previous-secrets: ${SECURITY_JWT_PREVIOUS_SECRETS:}

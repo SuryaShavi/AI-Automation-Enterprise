@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Validated
 @Tag(name = "AI Agent")
 @RequestMapping("/ai")
+@PreAuthorize("isAuthenticated()")
 public class AiController {
     private final ChatPersistenceService chatPersistenceService;
     private final AiChatService aiChatService;

@@ -1,11 +1,16 @@
 package com.aieap.platform.common.ai;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.util.StringUtils;
 
 @ConfigurationProperties(prefix = "ai.provider")
 public class AiProviderProperties {
     private String baseUrl = "https://api.openai.com/v1";
     private String apiKey;
+    private String apiKeyRotation;
     private String model = "gpt-4o-mini";
     private String embeddingModel = "text-embedding-3-small";
     private int connectTimeoutMs = 5000;
@@ -35,6 +40,30 @@ public class AiProviderProperties {
 
     public void setApiKey(String apiKey) {
         this.apiKey = apiKey;
+    }
+
+    public String getApiKeyRotation() {
+        return apiKeyRotation;
+    }
+
+    public void setApiKeyRotation(String apiKeyRotation) {
+        this.apiKeyRotation = apiKeyRotation;
+    }
+
+    public List<String> getApiKeyCandidates() {
+        LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>();
+        if (StringUtils.hasText(apiKey)) {
+            uniqueKeys.add(apiKey.trim());
+        }
+        if (StringUtils.hasText(apiKeyRotation)) {
+            for (String candidate : apiKeyRotation.split(",")) {
+                String trimmed = candidate.trim();
+                if (!trimmed.isEmpty()) {
+                    uniqueKeys.add(trimmed);
+                }
+            }
+        }
+        return new ArrayList<>(uniqueKeys);
     }
 
     public String getModel() {

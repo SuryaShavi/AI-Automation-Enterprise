@@ -42,7 +42,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
 
     @Override
     public boolean isConfigured() {
-        return StringUtils.hasText(properties.getApiKey());
+        return !properties.getApiKeyCandidates().isEmpty();
     }
 
     @Override
@@ -67,12 +67,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
 
         try {
-            Map<String, Object> response = withRetry(() -> restClient.post()
-                .uri("/chat/completions")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getApiKey())
-                .body(Objects.requireNonNull(payload))
-                .retrieve()
-                .body(Objects.requireNonNull(MAP_TYPE)));
+            Map<String, Object> response = postWithApiKeyFailover("/chat/completions", payload);
 
             return extractContent(response);
         } catch (RestClientException ex) {
@@ -97,12 +92,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         );
 
         try {
-            Map<String, Object> response = withRetry(() -> restClient.post()
-                .uri("/embeddings")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getApiKey())
-                .body(Objects.requireNonNull(payload))
-                .retrieve()
-                .body(Objects.requireNonNull(MAP_TYPE)));
+            Map<String, Object> response = postWithApiKeyFailover("/embeddings", payload);
 
             return extractEmbedding(response);
         } catch (RestClientResponseException ex) {
@@ -115,6 +105,32 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_GATEWAY,
                 "Embedding provider call failed: " + ex.getMessage(), ex);
         }
+    }
+
+    private Map<String, Object> postWithApiKeyFailover(String uri, Map<String, Object> payload) {
+        RestClientResponseException lastUnauthorized = null;
+        for (String apiKey : properties.getApiKeyCandidates()) {
+            try {
+                return withRetry(() -> restClient.post()
+                    .uri(uri)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                    .body(Objects.requireNonNull(payload))
+                    .retrieve()
+                    .body(Objects.requireNonNull(MAP_TYPE)));
+            } catch (RestClientResponseException responseException) {
+                int status = responseException.getStatusCode().value();
+                if (status == 401 || status == 403) {
+                    lastUnauthorized = responseException;
+                    continue;
+                }
+                throw responseException;
+            }
+        }
+
+        if (lastUnauthorized != null) {
+            throw lastUnauthorized;
+        }
+        throw new IllegalStateException("No AI provider API key is configured");
     }
 
     private JdkClientHttpRequestFactory buildRequestFactory(AiProviderProperties config) {

@@ -25,9 +25,11 @@ spring:
           min-idle: 0
 
 security:
+  enforce-https: ${SECURITY_ENFORCE_HTTPS:false}
   jwt:
     issuer: ${SECURITY_JWT_ISSUER:aieap-auth-service}
     secret: ${SECURITY_JWT_SECRET:ChangeThisSecretForLocalDev1234567890!}
+    previous-secrets: ${SECURITY_JWT_PREVIOUS_SECRETS:}
     access-token-ttl-minutes: ${SECURITY_JWT_ACCESS_TOKEN_TTL_MINUTES:15}
     refresh-token-ttl-days: ${SECURITY_JWT_REFRESH_TOKEN_TTL_DAYS:14}
 

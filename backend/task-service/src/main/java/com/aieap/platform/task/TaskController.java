@@ -23,6 +23,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -42,6 +43,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Validated
 @Tag(name = "Tasks")
 @RequestMapping("/tasks")
+@PreAuthorize("isAuthenticated()")
 public class TaskController {
     private final ObjectMapper objectMapper;
 
