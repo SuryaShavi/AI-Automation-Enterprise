@@ -1,14 +1,19 @@
 package com.aieap.platform.common;
 
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.List;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
@@ -30,6 +35,77 @@ public class GlobalExceptionHandler {
             ResponseFactory.traceId(request),
             null,
             new ApiError("VALIDATION_ERROR", "Request validation failed", details)
+        ));
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleConstraintViolation(
+        ConstraintViolationException exception,
+        HttpServletRequest request
+    ) {
+        List<String> details = exception.getConstraintViolations()
+            .stream()
+            .map(this::formatConstraintViolation)
+            .toList();
+
+        return ResponseEntity.badRequest().body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("VALIDATION_ERROR", "Request validation failed", details)
+        ));
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleUnreadableBody(
+        HttpMessageNotReadableException exception,
+        HttpServletRequest request
+    ) {
+        return ResponseEntity.badRequest().body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("BAD_REQUEST", "Malformed request payload", List.of())
+        ));
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleTypeMismatch(
+        MethodArgumentTypeMismatchException exception,
+        HttpServletRequest request
+    ) {
+        String detail = exception.getName() + ": invalid value";
+        return ResponseEntity.badRequest().body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("BAD_REQUEST", "Request parameter type mismatch", List.of(detail))
+        ));
+    }
+
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleMissingPart(
+        MissingServletRequestPartException exception,
+        HttpServletRequest request
+    ) {
+        return ResponseEntity.badRequest().body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("BAD_REQUEST", "Required multipart field is missing", List.of(exception.getRequestPartName()))
+        ));
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleIllegalArgument(
+        IllegalArgumentException exception,
+        HttpServletRequest request
+    ) {
+        return ResponseEntity.badRequest().body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("BAD_REQUEST", exception.getMessage(), List.of())
         ));
     }
 
@@ -66,5 +142,9 @@ public class GlobalExceptionHandler {
 
     private String formatFieldError(FieldError error) {
         return error.getField() + ": " + error.getDefaultMessage();
+    }
+
+    private String formatConstraintViolation(ConstraintViolation<?> violation) {
+        return violation.getPropertyPath() + ": " + violation.getMessage();
     }
 }

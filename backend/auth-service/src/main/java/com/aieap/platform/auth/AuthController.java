@@ -1,7 +1,9 @@
 package com.aieap.platform.auth;
 
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.InputSanitizer;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.common.validation.SafeStringMap;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -138,8 +140,8 @@ public class AuthController {
         newRoles.add("EMPLOYEE");
         ManagedUser newUser = new ManagedUser(
             newId, email,
-            request.firstName().trim(),
-            request.lastName().trim(),
+            InputSanitizer.requiredText(request.firstName()),
+            InputSanitizer.requiredText(request.lastName()),
             passwordEncoder.encode(request.password()),
             newRoles,
             new ConcurrentHashMap<>(Map.of("theme", "light", "locale", "en-US")),
@@ -176,8 +178,8 @@ public class AuthController {
         ManagedUser user = currentUser(authentication);
         String oldFirstName = user.firstName;
         String oldLastName = user.lastName;
-        user.firstName = request.firstName().trim();
-        user.lastName = request.lastName().trim();
+        user.firstName = InputSanitizer.requiredText(request.firstName());
+        user.lastName = InputSanitizer.requiredText(request.lastName());
         try {
             persistProfileToDatabase(user);
         } catch (RuntimeException ex) {
@@ -217,8 +219,11 @@ public class AuthController {
         HttpServletRequest servletRequest) {
         ManagedUser user = currentUser(authentication);
         Map<String, String> before = new HashMap<>(user.preferences);
-        user.preferences.putAll(request.preferences());
+        Map<String, String> sanitizedPreferences = InputSanitizer.stringMap(request.preferences());
         try {
+            user.preferences.clear();
+            user.preferences.putAll(before);
+            user.preferences.putAll(sanitizedPreferences);
             persistPreferencesToDatabase(user);
         } catch (RuntimeException ex) {
             user.preferences.clear();
@@ -576,7 +581,7 @@ public class AuthController {
                  message = "Password must be 12-72 chars and include upper, lower, digit, and symbol")
         String newPassword) {}
 
-    public record UpdatePreferencesRequest(Map<String, String> preferences) {
+    public record UpdatePreferencesRequest(@SafeStringMap Map<String, String> preferences) {
         public UpdatePreferencesRequest {
             preferences = preferences == null ? Map.of() : preferences;
         }

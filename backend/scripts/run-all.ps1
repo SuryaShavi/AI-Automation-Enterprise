@@ -18,5 +18,6 @@ $services = @(
 )
 
 foreach ($service in $services) {
-    Start-Process powershell -ArgumentList '-NoExit', '-Command', "Set-Location '$backendRoot'; mvn -pl $service -am spring-boot:run"
+    $serviceDir = Join-Path $backendRoot $service
+    Start-Process powershell -ArgumentList '-NoExit', '-Command', "Set-Location '$serviceDir'; Write-Host 'Starting $service ...' -ForegroundColor Cyan; mvn spring-boot:run"
 }

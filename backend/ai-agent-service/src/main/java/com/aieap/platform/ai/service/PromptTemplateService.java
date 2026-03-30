@@ -2,15 +2,16 @@ package com.aieap.platform.ai.service;
 
 import com.aieap.platform.ai.domain.PromptTemplate;
 import com.aieap.platform.ai.repository.PromptTemplateRepository;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
@@ -30,12 +31,12 @@ public class PromptTemplateService {
 
     public PromptTemplate getTemplate(String name) {
         return promptTemplateRepository.findByName(name)
-            .orElseThrow(() -> new IllegalArgumentException("Prompt template not found: " + name));
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Prompt template not found: " + name));
     }
 
     public PromptTemplate getTemplateById(UUID id) {
         return promptTemplateRepository.findById(Objects.requireNonNull(id, "template id must not be null"))
-            .orElseThrow(() -> new IllegalArgumentException("Prompt template not found"));
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Prompt template not found"));
     }
 
     @Cacheable(value = "prompt-templates", key = "'all'", unless = "#result.isEmpty()")

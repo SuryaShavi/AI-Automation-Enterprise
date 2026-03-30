@@ -10,6 +10,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -95,7 +97,7 @@ public class ReportController {
     }
 
     @GetMapping("/reports")
-    public ApiEnvelope<PageEnvelope<ReportItem>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size, HttpServletRequest request) {
+    public ApiEnvelope<PageEnvelope<ReportItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
         List<ReportItem> items = loadReports();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
@@ -120,8 +122,8 @@ public class ReportController {
             "INSERT INTO aieap.reports (id, owner_user_id, report_type, title, status, request_payload, requested_at) VALUES (?::uuid, ?::uuid, ?, ?, 'REQUESTED', ?::jsonb, NOW()) ON CONFLICT (id) DO NOTHING",
             id,
             targetUserId,
-            generateReportRequest.reportType(),
-            generateReportRequest.title(),
+            generateReportRequest.reportType().trim(),
+            generateReportRequest.title().trim(),
             payload
         );
         ReportItem report = report(id);
@@ -149,8 +151,8 @@ public class ReportController {
     }
 
     @GetMapping("/reports/{id}")
-    public ApiEnvelope<ReportItem> get(@PathVariable String id, HttpServletRequest request) {
-        ReportItem report = report(id);
+    public ApiEnvelope<ReportItem> get(@PathVariable UUID id, HttpServletRequest request) {
+        ReportItem report = report(id.toString());
         if (report == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Report not found");
         }

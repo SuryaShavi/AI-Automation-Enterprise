@@ -5,9 +5,12 @@ import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,7 +34,7 @@ public class NotificationController {
     private JdbcTemplate jdbcTemplate;
 
     @GetMapping
-    public ApiEnvelope<PageEnvelope<NotificationItem>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size, HttpServletRequest request) {
+    public ApiEnvelope<PageEnvelope<NotificationItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
         List<NotificationItem> items = loadNotifications();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
@@ -57,10 +60,11 @@ public class NotificationController {
 
     @PatchMapping("/{id}/read")
     @Transactional
-    public ApiEnvelope<NotificationItem> markRead(@PathVariable String id, HttpServletRequest request) {
+    public ApiEnvelope<NotificationItem> markRead(@PathVariable UUID id, HttpServletRequest request) {
+        String notificationId = id.toString();
         JdbcTemplate db = requireJdbc();
-        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE id = ?::uuid", id);
-        return ResponseFactory.success(request, notification(id));
+        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE id = ?::uuid", notificationId);
+        return ResponseFactory.success(request, notification(notificationId));
     }
 
     @PatchMapping("/read-all")
@@ -73,10 +77,11 @@ public class NotificationController {
 
     @DeleteMapping("/{id}")
     @Transactional
-    public ApiEnvelope<Map<String, String>> delete(@PathVariable String id, HttpServletRequest request) {
+    public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, HttpServletRequest request) {
+        String notificationId = id.toString();
         JdbcTemplate db = requireJdbc();
-        db.update("DELETE FROM aieap.notifications WHERE id = ?::uuid", id);
-        return ResponseFactory.success(request, Map.of("status", "deleted", "id", id));
+        db.update("DELETE FROM aieap.notifications WHERE id = ?::uuid", notificationId);
+        return ResponseFactory.success(request, Map.of("status", "deleted", "id", notificationId));
     }
 
     private NotificationItem notification(String id) {

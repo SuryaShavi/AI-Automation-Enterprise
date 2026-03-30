@@ -13,10 +13,15 @@
     <artifactId>db-migrations</artifactId>
     <name>db-migrations</name>
 
+    <properties>
+        <flyway.version>10.18.2</flyway.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -29,12 +34,12 @@
             <plugin>
                 <groupId>org.flywaydb</groupId>
                 <artifactId>flyway-maven-plugin</artifactId>
-                <version>10.18.2</version>
+                <version>${flyway.version}</version>
                 <dependencies>
                     <dependency>
                         <groupId>org.flywaydb</groupId>
                         <artifactId>flyway-database-postgresql</artifactId>
-                        <version>10.18.2</version>
+                        <version>${flyway.version}</version>
                     </dependency>
                 </dependencies>
                 <configuration>

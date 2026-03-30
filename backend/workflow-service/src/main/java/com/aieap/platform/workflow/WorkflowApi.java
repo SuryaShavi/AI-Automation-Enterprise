@@ -1,6 +1,11 @@
 package com.aieap.platform.workflow;
 
+import com.aieap.platform.common.validation.NullOrNotBlank;
+import com.aieap.platform.workflow.validation.ValidWorkflowTrigger;
+import com.aieap.platform.workflow.validation.ValidWorkflowUpdate;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -55,30 +60,32 @@ public final class WorkflowApi {
     }
 
     public record CreateWorkflowRequest(
-        @NotBlank String name,
-        List<String> steps,
-        List<WorkflowTriggerRequest> triggers
+        @NotBlank @Size(max = 120) String name,
+        @Size(max = 50) List<@NotBlank @Size(max = 120) String> steps,
+        @Size(max = 10) List<@Valid WorkflowTriggerRequest> triggers
     ) {
     }
 
     public record WorkflowStatusRequest(@NotBlank String status) {
     }
 
+    @ValidWorkflowUpdate
     public record WorkflowUpdateRequest(
-        String status,
-        String name,
-        List<WorkflowTriggerRequest> triggers
+        @NullOrNotBlank String status,
+        @NullOrNotBlank @Size(max = 120) String name,
+        @Size(max = 10) List<@Valid WorkflowTriggerRequest> triggers
     ) {
     }
 
+    @ValidWorkflowTrigger
     public record WorkflowTriggerRequest(
-        String type,
-        String scheduleCron,
-        String eventType,
-        String provider,
-        String secret,
+        @NullOrNotBlank String type,
+        @NullOrNotBlank @Size(max = 120) String scheduleCron,
+        @NullOrNotBlank @Size(max = 120) String eventType,
+        @NullOrNotBlank @Size(max = 80) String provider,
+        @NullOrNotBlank @Size(max = 160) String secret,
         Boolean enabled,
-        Map<String, Object> payloadFilter
+        @Size(max = 20) Map<String, Object> payloadFilter
     ) {
     }
 
@@ -92,9 +99,9 @@ public final class WorkflowApi {
     }
 
     public record WorkflowEventRequest(
-        @NotBlank String eventType,
-        String source,
-        Map<String, Object> payload
+        @NotBlank @Size(max = 120) String eventType,
+        @NullOrNotBlank @Size(max = 120) String source,
+        @Size(max = 25) Map<String, Object> payload
     ) {
     }
 

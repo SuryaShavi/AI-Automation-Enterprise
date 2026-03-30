@@ -1,13 +1,19 @@
 package com.aieap.platform.task;
 
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.InputSanitizer;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.common.validation.AllowedValues;
+import com.aieap.platform.common.validation.NullOrNotBlank;
+import com.aieap.platform.common.validation.NullOrValidUuid;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
@@ -48,11 +54,11 @@ public class TaskController {
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<TaskItem>> listTasks(
-        @RequestParam(defaultValue = "0") int page,
-        @RequestParam(defaultValue = "20") int size,
-        @RequestParam(required = false) String status,
-        @RequestParam(required = false) String priority,
-        @RequestParam(defaultValue = "dueAt") String sort,
+        @RequestParam(defaultValue = "0") @Min(0) int page,
+        @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
+        @RequestParam(required = false) @AllowedValues(values = {"PENDING", "IN_PROGRESS", "COMPLETED"}) String status,
+        @RequestParam(required = false) @AllowedValues(values = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}) String priority,
+        @RequestParam(defaultValue = "dueAt") @AllowedValues(values = {"dueAt", "priority", "createdAt"}, allowNull = false) String sort,
         HttpServletRequest request
     ) {
         List<TaskItem> filtered = loadTasks().stream()
@@ -92,8 +98,8 @@ public class TaskController {
             "ON CONFLICT (id) DO NOTHING",
             id,
             parseUuidOrNull(source),
-            createTaskRequest.title(),
-            createTaskRequest.description(),
+            InputSanitizer.requiredText(createTaskRequest.title()),
+            InputSanitizer.nullableText(createTaskRequest.description()),
             parseUuidOrNull(createTaskRequest.assigneeUserId()),
             priority,
             dueAt,
@@ -106,18 +112,25 @@ public class TaskController {
     @PatchMapping("/{id}")
     @Transactional
     public ApiEnvelope<TaskItem> updateTask(
-        @PathVariable String id,
+        @PathVariable UUID id,
         @Valid @RequestBody UpdateTaskRequest updateTaskRequest,
         HttpServletRequest request
     ) {
-        TaskItem existing = task(id);
+        String taskId = id.toString();
+        TaskItem existing = task(taskId);
+        String updatedPriority = updateTaskRequest.priority() == null
+            ? existing.priority()
+            : updateTaskRequest.priority().toUpperCase();
+        String updatedStatus = updateTaskRequest.status() == null
+            ? existing.status()
+            : updateTaskRequest.status().toUpperCase();
         TaskItem updated = new TaskItem(
             existing.id(),
-            updateTaskRequest.title() == null ? existing.title() : updateTaskRequest.title(),
-            updateTaskRequest.description() == null ? existing.description() : updateTaskRequest.description(),
+            updateTaskRequest.title() == null ? existing.title() : InputSanitizer.requiredText(updateTaskRequest.title()),
+            updateTaskRequest.description() == null ? existing.description() : InputSanitizer.nullableText(updateTaskRequest.description()),
             updateTaskRequest.assigneeUserId() == null ? existing.assigneeUserId() : updateTaskRequest.assigneeUserId(),
-            updateTaskRequest.priority() == null ? existing.priority() : updateTaskRequest.priority(),
-            updateTaskRequest.status() == null ? existing.status() : updateTaskRequest.status(),
+            updatedPriority,
+            updatedStatus,
             updateTaskRequest.dueAt() == null ? existing.dueAt() : updateTaskRequest.dueAt(),
             OffsetDateTime.now(),
             existing.source()
@@ -132,17 +145,18 @@ public class TaskController {
             updated.status(),
             updated.dueAt(),
             toJson(Map.of("source", updated.source())),
-            id
+            taskId
         );
         return ResponseFactory.success(request, updated);
     }
 
     @DeleteMapping("/{id}")
     @Transactional
-    public ApiEnvelope<Map<String, String>> deleteTask(@PathVariable String id, HttpServletRequest request) {
+    public ApiEnvelope<Map<String, String>> deleteTask(@PathVariable UUID id, HttpServletRequest request) {
+        String taskId = id.toString();
         JdbcTemplate db = requireJdbc();
-        db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid", id);
-        return ResponseFactory.success(request, Map.of("status", "deleted", "id", id));
+        db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid", taskId);
+        return ResponseFactory.success(request, Map.of("status", "deleted", "id", taskId));
     }
 
     @GetMapping("/board")
@@ -239,10 +253,24 @@ public class TaskController {
     public record TaskItem(String id, String title, String description, String assigneeUserId, String priority, String status, OffsetDateTime dueAt, OffsetDateTime updatedAt, String source) {
     }
 
-    public record CreateTaskRequest(@NotBlank String title, String description, String assigneeUserId, String priority, OffsetDateTime dueAt, String source) {
+    public record CreateTaskRequest(
+        @NotBlank String title,
+        @NullOrNotBlank String description,
+        @NullOrValidUuid String assigneeUserId,
+        @AllowedValues(values = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}) String priority,
+        OffsetDateTime dueAt,
+        @NullOrNotBlank String source
+    ) {
     }
 
-    public record UpdateTaskRequest(String title, String description, String assigneeUserId, String priority, String status, OffsetDateTime dueAt) {
+    public record UpdateTaskRequest(
+        @NullOrNotBlank String title,
+        @NullOrNotBlank String description,
+        @NullOrValidUuid String assigneeUserId,
+        @AllowedValues(values = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}) String priority,
+        @AllowedValues(values = {"PENDING", "IN_PROGRESS", "COMPLETED"}) String status,
+        OffsetDateTime dueAt
+    ) {
     }
 
     public record BoardColumn(String status, List<TaskItem> tasks) {

@@ -1,14 +1,18 @@
 package com.aieap.platform.document;
 
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.InputSanitizer;
 import com.aieap.platform.common.ai.LlmClient;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.common.validation.NullOrValidUuid;
 import com.aieap.platform.document.kafka.KafkaEventPublisher;
 import com.aieap.platform.document.kafka.events.DocumentChunksReadyEvent;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -68,12 +72,13 @@ public class DocumentController {
     @Transactional
     public ApiEnvelope<DocumentItem> upload(
         @RequestPart("file") MultipartFile file,
-        @RequestPart(value = "ownerUserId", required = false) String ownerUserId,
+        @RequestPart(value = "ownerUserId", required = false) @NullOrValidUuid String ownerUserId,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        validateUpload(file);
         String id = UUID.randomUUID().toString();
-        String fileName = file.getOriginalFilename() == null ? "unnamed" : file.getOriginalFilename();
+        String fileName = InputSanitizer.fileName(file.getOriginalFilename());
         String fileType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
         String storagePath = "local://uploads/" + id + "/" + fileName;
         DocumentRagService.ProcessedDocument processed = documentRagService.processUpload(file);
@@ -150,7 +155,7 @@ public class DocumentController {
     }
 
     @GetMapping
-    public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size, HttpServletRequest request) {
+    public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
         List<DocumentItem> items = loadDocuments();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
@@ -158,16 +163,18 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}")
-    public ApiEnvelope<DocumentItem> get(@PathVariable String id, HttpServletRequest request) {
-        return ResponseFactory.success(request, document(id));
+    public ApiEnvelope<DocumentItem> get(@PathVariable UUID id, HttpServletRequest request) {
+        return ResponseFactory.success(request, document(id.toString()));
     }
 
     @PostMapping("/{id}/ask")
-    public ApiEnvelope<DocumentAnswer> ask(@PathVariable String id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
-        document(id);
-        RetrievalResult retrievalResult = loadRelevantChunks(id, askDocumentRequest.question(), 8);
+    public ApiEnvelope<DocumentAnswer> ask(@PathVariable UUID id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
+        String documentId = id.toString();
+        String question = InputSanitizer.requiredText(askDocumentRequest.question());
+        document(documentId);
+        RetrievalResult retrievalResult = loadRelevantChunks(documentId, question, 8);
         List<DocumentChunk> citations = retrievalResult.chunks();
-        String answer = documentRagService.answerQuestion(askDocumentRequest.question(), citations);
+        String answer = documentRagService.answerQuestion(question, citations);
 
         double confidence;
         if (citations.isEmpty()) {
@@ -179,7 +186,7 @@ public class DocumentController {
         }
 
         return ResponseFactory.success(request, new DocumentAnswer(
-            askDocumentRequest.question(),
+            question,
             answer,
             confidence,
             citations
@@ -187,9 +194,10 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}/chunks")
-    public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable String id, HttpServletRequest request) {
-        document(id);
-        return ResponseFactory.success(request, loadChunks(id));
+    public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable UUID id, HttpServletRequest request) {
+        String documentId = id.toString();
+        document(documentId);
+        return ResponseFactory.success(request, loadChunks(documentId));
     }
 
     private DocumentItem document(String id) {
@@ -381,6 +389,12 @@ public class DocumentController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
         }
         return jdbcTemplate;
+    }
+
+    private void validateUpload(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Uploaded file must not be empty");
+        }
     }
 
     private String parseUuidOrNull(String value) {

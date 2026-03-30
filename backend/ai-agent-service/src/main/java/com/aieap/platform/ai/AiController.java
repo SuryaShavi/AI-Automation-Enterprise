@@ -3,17 +3,22 @@ package com.aieap.platform.ai;
 import com.aieap.platform.ai.domain.ChatSession;
 import com.aieap.platform.ai.service.ChatPersistenceService;
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.InputSanitizer;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.common.validation.AllowedValues;
+import com.aieap.platform.common.validation.NullOrValidUuid;
+import com.aieap.platform.common.validation.SafeStringMap;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.validation.annotation.Validated;
@@ -52,26 +57,28 @@ public class AiController {
         HttpServletRequest request
     ) {
         UUID userId = extractUserId(authentication);
-        UUID chatId = chatRequest.chatId() == null || chatRequest.chatId().isBlank() 
-            ? UUID.randomUUID() 
-            : UUID.fromString(chatRequest.chatId());
+        String prompt = InputSanitizer.requiredText(chatRequest.prompt());
+        UUID chatId = parseOptionalUuid(chatRequest.chatId());
+        if (chatId == null) {
+            chatId = UUID.randomUUID();
+        }
 
         // Get or create chat session
-        ChatSession session = chatPersistenceService.getChatSessionOrCreate(chatId, userId, chatRequest.prompt());
+        ChatSession session = chatPersistenceService.getChatSessionOrCreate(chatId, userId, prompt);
 
         // Load existing history BEFORE adding the new message so it isn't duplicated in context
         List<ChatPersistenceService.ChatMessageDto> history = chatPersistenceService.getChatMessages(session.getId());
         List<AiController.ChatMessage> messageHistory = history.stream()
             .map(m -> new ChatMessage(m.id(), m.role(), m.content(), m.createdAt()))
-            .collect(Collectors.toList());
+            .toList();
 
         // Persist user message
-        chatPersistenceService.addMessage(session.getId(), "user", chatRequest.prompt(), "[]");
+        chatPersistenceService.addMessage(session.getId(), "user", prompt, "[]");
 
         // Get AI response
         AiChatService.ChatResult chatResult = aiChatService.answer(
             chatRequest.mode(),
-            chatRequest.prompt(),
+            prompt,
             chatRequest.attachments(),
             messageHistory
         );
@@ -110,7 +117,7 @@ public class AiController {
         UUID userId = extractUserId(authentication);
         List<ChatSummary> summaries = chatPersistenceService.getUserChatSessions(userId).stream()
             .map(session -> new ChatSummary(session.id(), session.title(), session.updatedAt(), session.messageCount()))
-            .collect(Collectors.toList());
+            .toList();
         return ResponseFactory.success(request, summaries);
     }
 
@@ -125,7 +132,7 @@ public class AiController {
 
         List<ChatMessage> messages = chatPersistenceService.getChatMessages(id).stream()
             .map(m -> new ChatMessage(m.id(), m.role(), m.content(), m.createdAt()))
-            .collect(Collectors.toList());
+            .toList();
         return ResponseFactory.success(request, messages);
     }
 
@@ -144,14 +151,14 @@ public class AiController {
         String status = documentId == null ? "QUEUED" : "READY";
         chatPersistenceService.addAttachment(
             id,
-            attachmentRequest.fileName(),
-            attachmentRequest.contentType(),
+            InputSanitizer.fileName(attachmentRequest.fileName()),
+            InputSanitizer.requiredText(attachmentRequest.contentType()),
             attachmentRequest.size(),
             documentId,
-            attachmentRequest.metadata() == null ? null : attachmentRequest.metadata().get("storagePath"),
+            attachmentRequest.metadata() == null ? null : InputSanitizer.nullableText(attachmentRequest.metadata().get("storagePath")),
             status
         );
-        return ResponseFactory.success(request, new AttachmentReceipt(id.toString(), attachmentRequest.fileName(), attachmentRequest.contentType(), attachmentRequest.size(), status));
+        return ResponseFactory.success(request, new AttachmentReceipt(id.toString(), InputSanitizer.fileName(attachmentRequest.fileName()), InputSanitizer.requiredText(attachmentRequest.contentType()), attachmentRequest.size(), status));
     }
 
     // Helper methods
@@ -187,7 +194,12 @@ public class AiController {
     public record ChatMessage(String id, String role, String content, OffsetDateTime createdAt) {
     }
 
-    public record ChatRequest(String chatId, @NotBlank String prompt, String mode, List<String> attachments) {
+    public record ChatRequest(
+        @NullOrValidUuid String chatId,
+        @NotBlank @Size(max = 4000) String prompt,
+        @AllowedValues(values = {"document", "task", "report", "general", "code"}) String mode,
+        @Size(max = 10) List<@NotBlank String> attachments
+    ) {
     }
 
     public record ChatReply(String chatId, ChatMessage message, List<String> guardrails) {
@@ -197,11 +209,11 @@ public class AiController {
     }
 
     public record AttachmentRequest(
-        @NotBlank String fileName,
-        @NotBlank String contentType,
-        long size,
-        String documentId,
-        Map<String, String> metadata
+        @NotBlank @Size(max = 255) String fileName,
+        @NotBlank @Size(max = 120) String contentType,
+        @Positive long size,
+        @NullOrValidUuid String documentId,
+        @SafeStringMap(maxEntries = 8, maxKeyLength = 64, maxValueLength = 512) Map<String, String> metadata
     ) {
     }
 

@@ -1,16 +1,22 @@
 package com.aieap.platform.email;
 
 import com.aieap.platform.common.ApiEnvelope;
+import com.aieap.platform.common.InputSanitizer;
 import com.aieap.platform.common.PageEnvelope;
 import com.aieap.platform.common.ResponseFactory;
+import com.aieap.platform.common.validation.AllowedValues;
+import com.aieap.platform.common.validation.NullOrNotBlank;
 import com.aieap.platform.email.kafka.KafkaEventPublisher;
 import com.aieap.platform.email.kafka.events.EmailIngestedEvent;
 import com.aieap.platform.email.kafka.events.ExtractedTaskCreatedEvent;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.PastOrPresent;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -51,8 +57,8 @@ public class EmailController {
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<EmailItem>> list(
-        @RequestParam(defaultValue = "0") int page,
-        @RequestParam(defaultValue = "20") int size,
+        @RequestParam(defaultValue = "0") @Min(0) int page,
+        @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
         HttpServletRequest request
     ) {
         List<EmailItem> items = loadEmails();
@@ -62,8 +68,8 @@ public class EmailController {
     }
 
     @GetMapping("/{id}")
-    public ApiEnvelope<EmailItem> get(@PathVariable String id, HttpServletRequest request) {
-        return ResponseFactory.success(request, email(id));
+    public ApiEnvelope<EmailItem> get(@PathVariable UUID id, HttpServletRequest request) {
+        return ResponseFactory.success(request, email(id.toString()));
     }
 
     @PostMapping("/ingest")
@@ -92,12 +98,12 @@ public class EmailController {
             "VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
             id,
             id,
-            ingestEmailRequest.senderName(),
-            ingestEmailRequest.senderEmail(),
-            ingestEmailRequest.subject(),
-            ingestEmailRequest.bodyText(),
-            ingestEmailRequest.bodyHtml(),
-            generatedSummary,
+            InputSanitizer.nullableText(ingestEmailRequest.senderName()),
+            ingestEmailRequest.senderEmail().trim().toLowerCase(),
+            InputSanitizer.requiredText(ingestEmailRequest.subject()),
+            InputSanitizer.nullableText(ingestEmailRequest.bodyText()),
+            InputSanitizer.nullableText(ingestEmailRequest.bodyHtml()),
+            InputSanitizer.nullableText(generatedSummary),
             priority,
             receivedAt
         );
@@ -129,12 +135,13 @@ public class EmailController {
 
     @PostMapping("/{id}/extract-tasks")
     @Transactional
-    public ApiEnvelope<ExtractTaskResponse> extractTasks(@PathVariable String id, HttpServletRequest request) {
-        EmailItem email = email(id);
+    public ApiEnvelope<ExtractTaskResponse> extractTasks(@PathVariable UUID id, HttpServletRequest request) {
+        String emailId = id.toString();
+        EmailItem email = email(emailId);
         JdbcTemplate db = requireJdbc();
-        List<ExtractedTask> existing = loadExtractedTasks(id);
+        List<ExtractedTask> existing = loadExtractedTasks(emailId);
         if (!existing.isEmpty()) {
-            return ResponseFactory.success(request, new ExtractTaskResponse(id, existing));
+            return ResponseFactory.success(request, new ExtractTaskResponse(emailId, existing));
         }
 
         List<ExtractedTask> extractedTasks = emailAiService.extractTasks(email);
@@ -144,7 +151,7 @@ public class EmailController {
         for (ExtractedTask task : extractedTasks) {
             db.update(
                 "INSERT INTO aieap.extracted_tasks (id, email_id, suggested_title, confidence, status) VALUES (?::uuid, ?::uuid, ?, ?, 'PENDING_REVIEW')",
-                task.id(), id, task.title(), BigDecimal.valueOf(task.confidence())
+                task.id(), emailId, task.title(), BigDecimal.valueOf(task.confidence())
             );
             if (kafkaEventPublisher != null) {
                 kafkaEventPublisher.publish(
@@ -153,7 +160,7 @@ public class EmailController {
                     new ExtractedTaskCreatedEvent(
                         UUID.randomUUID().toString(),
                         correlationId,
-                        id,
+                        emailId,
                         task.id(),
                         task.title(),
                         task.confidence(),
@@ -163,7 +170,7 @@ public class EmailController {
                 );
             }
         }
-        return ResponseFactory.success(request, new ExtractTaskResponse(id, extractedTasks));
+        return ResponseFactory.success(request, new ExtractTaskResponse(emailId, extractedTasks));
     }
 
     @GetMapping("/stats")
@@ -273,14 +280,14 @@ public class EmailController {
     }
 
     public record IngestEmailRequest(
-        String senderName,
+        @NullOrNotBlank String senderName,
         @Email @NotBlank String senderEmail,
         @NotBlank String subject,
-        String bodyText,
-        String bodyHtml,
-        String aiSummary,
-        String priority,
-        OffsetDateTime receivedAt
+        @NullOrNotBlank String bodyText,
+        @NullOrNotBlank String bodyHtml,
+        @NullOrNotBlank String aiSummary,
+        @AllowedValues(values = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}) String priority,
+        @PastOrPresent OffsetDateTime receivedAt
     ) {
     }
 
