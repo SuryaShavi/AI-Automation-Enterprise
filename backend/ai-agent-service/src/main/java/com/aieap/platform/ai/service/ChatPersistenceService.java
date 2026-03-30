@@ -48,8 +48,6 @@ public class ChatPersistenceService {
     public ChatSession getChatSessionOrCreate(UUID sessionId, UUID userId, String firstMessage) {
         return chatSessionRepository.findByIdAndUserId(sessionId, userId)
             .orElseGet(() -> {
-                // Let JPA generate the identifier; manually assigning IDs on a generated
-                // entity can cause optimistic locking failures during merge/save.
                 String title = firstMessage.substring(0, Math.min(firstMessage.length(), 50));
                 ChatSession session = new ChatSession(userId, title);
                 return chatSessionRepository.save(session);
@@ -70,7 +68,7 @@ public class ChatPersistenceService {
     public void deleteChatSession(UUID sessionId, UUID userId) {
         ChatSession session = chatSessionRepository.findByIdAndUserId(sessionId, userId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat session not found"));
-        chatSessionRepository.delete(Objects.requireNonNull(session));
+        chatSessionRepository.delete(session);
     }
 
     // Chat Message Operations
@@ -86,7 +84,7 @@ public class ChatPersistenceService {
         String toolCalls,
         String metadataJson
     ) {
-        ChatSession session = chatSessionRepository.findById(Objects.requireNonNull(sessionId))
+        ChatSession session = chatSessionRepository.findById(sessionId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat session not found"));
 
         ChatMessage message = new ChatMessage(session, role, content, guardrails);
@@ -94,7 +92,7 @@ public class ChatPersistenceService {
         message.setMetadataJson(metadataJson == null || metadataJson.isBlank() ? "{}" : metadataJson);
         ChatMessage saved = chatMessageRepository.save(message);
 
-        // Touch the session so it floats to the top of the recent list
+        // Touch the session updated_at
         session.setUpdatedAt(OffsetDateTime.now());
         chatSessionRepository.save(session);
 
@@ -121,25 +119,28 @@ public class ChatPersistenceService {
         String storagePath,
         String processingStatus
     ) {
-        ChatSession session = chatSessionRepository.findById(Objects.requireNonNull(sessionId))
+        ChatSession session = chatSessionRepository.findById(sessionId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat session not found"));
+
+        String resolvedStatus = (processingStatus == null || processingStatus.isBlank())
+            ? (documentId == null ? "QUEUED" : "READY")
+            : processingStatus;
 
         ChatAttachment attachment = new ChatAttachment(session, fileName, contentType, fileSize);
         attachment.setDocumentId(documentId);
         attachment.setStoragePath(storagePath);
-        attachment.setProcessingStatus(processingStatus == null || processingStatus.isBlank()
-            ? (documentId == null ? "QUEUED" : "READY")
-            : processingStatus);
+        attachment.setProcessingStatus(resolvedStatus);
+
         return chatAttachmentRepository.save(attachment);
     }
 
     public List<ChatAttachmentDto> getAttachments(UUID sessionId) {
-        return chatAttachmentRepository.findByChatSessionIdOrderByUploadedAtDesc(Objects.requireNonNull(sessionId)).stream()
+        return chatAttachmentRepository.findByChatSessionIdOrderByUploadedAtDesc(sessionId).stream()
             .map(this::toChatAttachmentDto)
             .collect(Collectors.toList());
     }
 
-    // DTOs
+    // DTO Records
     public record ChatSessionDto(
         String id,
         String title,
@@ -168,7 +169,7 @@ public class ChatPersistenceService {
         OffsetDateTime uploadedAt
     ) {}
 
-    // Mapping helpers
+    // Private mapping methods
     private ChatSessionDto toChatSessionDto(ChatSession session) {
         return new ChatSessionDto(
             session.getId().toString(),

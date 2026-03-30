@@ -45,6 +45,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/emails")
 @PreAuthorize("isAuthenticated()")
 public class EmailController {
+    private static final double AUTO_CREATE_TASK_CONFIDENCE_THRESHOLD = 0.5;
     private final EmailAiService emailAiService;
 
     @Autowired(required = false)
@@ -155,6 +156,7 @@ public class EmailController {
                 "INSERT INTO aieap.extracted_tasks (id, email_id, suggested_title, confidence, status) VALUES (?::uuid, ?::uuid, ?, ?, 'PENDING_REVIEW')",
                 task.id(), emailId, task.title(), BigDecimal.valueOf(task.confidence())
             );
+            autoCreateTaskFromExtraction(db, emailId, task, correlationId);
             if (kafkaEventPublisher != null) {
                 kafkaEventPublisher.publish(
                     "extracted.task.created",
@@ -173,6 +175,31 @@ public class EmailController {
             }
         }
         return ResponseFactory.success(request, new ExtractTaskResponse(emailId, extractedTasks));
+    }
+
+    private void autoCreateTaskFromExtraction(JdbcTemplate db, String emailId, ExtractedTask task, String correlationId) {
+        if (task.confidence() < AUTO_CREATE_TASK_CONFIDENCE_THRESHOLD) {
+            return;
+        }
+
+        Integer existing = db.queryForObject(
+            "SELECT COUNT(*) FROM aieap.tasks WHERE metadata_json->>'eventId' = ?",
+            Integer.class,
+            task.id()
+        );
+        if (existing != null && existing > 0) {
+            return;
+        }
+
+        db.update(
+            "INSERT INTO aieap.tasks (id, source_email_id, title, description, priority, status, metadata_json, created_at, updated_at) " +
+                "VALUES (?::uuid, ?::uuid, ?, ?, 'MEDIUM', 'PENDING', ?::jsonb, NOW(), NOW()) ON CONFLICT (id) DO NOTHING",
+            task.id(),
+            emailId,
+            task.title(),
+            "Auto-created from email extraction (confidence=" + task.confidence() + ")",
+            "{\"source\":\"email-extraction\",\"eventId\":\"" + task.id() + "\",\"correlationId\":\"" + correlationId + "\"}"
+        );
     }
 
     @GetMapping("/stats")
