@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Send, Paperclip, Bot, User } from "lucide-react";
 import { apiClient } from "../../api/client";
 import { endpoints } from "../../api/endpoints";
-import type { AttachmentReceipt, ChatMessage, ChatReply, ChatSummary } from "../../api/contracts";
+import type { AttachmentReceipt, ChatMessage, ChatReply, ChatSummary, DocumentItem } from "../../api/contracts";
 
 function createLocalChatId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -19,6 +19,8 @@ export default function AIAssistant() {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>(createLocalChatId());
   const [serverChatId, setServerChatId] = useState<string | null>(null);
+  const [attachmentRefs, setAttachmentRefs] = useState<string[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -67,6 +69,8 @@ export default function AIAssistant() {
       const envelope = await apiClient.request<ChatMessage[]>(endpoints.ai.messages(chatId));
       setActiveChatId(chatId);
       setServerChatId(chatId);
+      setAttachmentRefs([]);
+      setAttachedFiles([]);
       setMessages(envelope.data);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load messages");
@@ -77,6 +81,8 @@ export default function AIAssistant() {
     const newChatId = createLocalChatId();
     setActiveChatId(newChatId);
     setServerChatId(null);
+    setAttachmentRefs([]);
+    setAttachedFiles([]);
     setError(null);
     setMessages([]);
   }
@@ -107,7 +113,7 @@ export default function AIAssistant() {
           chatId: activeChatId,
           prompt,
           mode: "general",
-          attachments: [],
+          attachments: attachmentRefs,
         },
       });
 
@@ -139,15 +145,32 @@ export default function AIAssistant() {
     }
 
     try {
+      const uploadBody = new FormData();
+      uploadBody.append("file", file);
+      const documentEnvelope = await apiClient.request<DocumentItem>(endpoints.documents.upload, {
+        method: "POST",
+        body: uploadBody,
+      });
+
       await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(serverChatId), {
         method: "POST",
         body: {
           fileName: file.name,
           contentType: file.type || "application/octet-stream",
           size: file.size,
-          metadata: { source: "ui" },
+          documentId: documentEnvelope.data.id,
+          metadata: { source: "ui", storagePath: `document:${documentEnvelope.data.id}` },
         },
       });
+
+      setAttachmentRefs((previous) => {
+        if (previous.includes(documentEnvelope.data.id)) {
+          return previous;
+        }
+        return [...previous, documentEnvelope.data.id];
+      });
+      setAttachedFiles((previous) => [...previous, documentEnvelope.data.fileName]);
+      setError(null);
     } catch (attachError) {
       setError(attachError instanceof Error ? attachError.message : "Failed to upload attachment");
     } finally {
@@ -234,6 +257,19 @@ export default function AIAssistant() {
               ))}
             </div>
           </div>
+
+          {attachedFiles.length > 0 && (
+            <div className="mb-3">
+              <p className="text-sm text-gray-600 mb-2">Attached for analysis:</p>
+              <div className="flex flex-wrap gap-2">
+                {attachedFiles.map((name, index) => (
+                  <span key={`${name}-${index}`} className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <input ref={attachmentInputRef} type="file" className="hidden" onChange={(event) => void handleAttachment(event)} />
