@@ -9,6 +9,7 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
+import org.springframework.dao.DataAccessException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -120,6 +121,23 @@ public class GlobalExceptionHandler {
             ResponseFactory.traceId(request),
             null,
             new ApiError(status.name(), exception.getReason(), List.of())
+        ));
+    }
+
+    @ExceptionHandler(DataAccessException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleDataAccess(
+        DataAccessException exception,
+        HttpServletRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError(
+                "DATABASE_UNAVAILABLE",
+                "Database is unavailable or schema is incomplete. Ensure PostgreSQL is running and migrations are applied.",
+                List.of(exception.getClass().getSimpleName())
+            )
         ));
     }
 

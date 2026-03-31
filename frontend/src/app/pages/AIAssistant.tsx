@@ -18,6 +18,7 @@ function createLocalChatId() {
 export default function AIAssistant() {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>(createLocalChatId());
+  const [serverChatId, setServerChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -65,6 +66,7 @@ export default function AIAssistant() {
       setError(null);
       const envelope = await apiClient.request<ChatMessage[]>(endpoints.ai.messages(chatId));
       setActiveChatId(chatId);
+      setServerChatId(chatId);
       setMessages(envelope.data);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load messages");
@@ -74,6 +76,8 @@ export default function AIAssistant() {
   function handleNewChat() {
     const newChatId = createLocalChatId();
     setActiveChatId(newChatId);
+    setServerChatId(null);
+    setError(null);
     setMessages([]);
   }
 
@@ -108,6 +112,7 @@ export default function AIAssistant() {
       });
 
       setActiveChatId(envelope.data.chatId);
+      setServerChatId(envelope.data.chatId);
       setMessages((previous) => [...previous.filter((message) => message.id !== optimistic.id), optimistic, envelope.data.message]);
 
       const chatsEnvelope = await apiClient.request<ChatSummary[]>(endpoints.ai.chats);
@@ -123,12 +128,18 @@ export default function AIAssistant() {
 
   async function handleAttachment(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !activeChatId) {
+    if (!file) {
+      return;
+    }
+
+    if (!serverChatId) {
+      setError("Send your first message to create a chat session before attaching files.");
+      event.target.value = "";
       return;
     }
 
     try {
-      await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(activeChatId), {
+      await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(serverChatId), {
         method: "POST",
         body: {
           fileName: file.name,
@@ -226,7 +237,12 @@ export default function AIAssistant() {
 
           <div className="flex gap-2">
             <input ref={attachmentInputRef} type="file" className="hidden" onChange={(event) => void handleAttachment(event)} />
-            <button onClick={() => attachmentInputRef.current?.click()} className="p-3 hover:bg-gray-100 rounded-lg transition-colors">
+            <button
+              onClick={() => attachmentInputRef.current?.click()}
+              disabled={!serverChatId}
+              title={serverChatId ? "Attach a file" : "Send your first message to enable attachments"}
+              className="p-3 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
               <Paperclip size={20} className="text-gray-600" />
             </button>
             <input
