@@ -24,7 +24,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         new ParameterizedTypeReference<>() { };
 
     private final RestClient restClient;
-    private final RestClient ollamaRestClient;
     private final AiProviderProperties properties;
 
     public OpenAiCompatibleLlmClient(RestClient.Builder restClientBuilder, AiProviderProperties properties) {
@@ -33,10 +32,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         this.restClient = restClientBuilder
             .requestFactory(requestFactory)
             .baseUrl(Objects.requireNonNull(properties.getBaseUrl(), "ai.provider.base-url must be configured"))
-            .build();
-        this.ollamaRestClient = restClientBuilder
-            .requestFactory(buildRequestFactory(properties))
-            .baseUrl(stripV1Suffix(properties.getBaseUrl()))
             .build();
     }
 
@@ -95,12 +90,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             Map<String, Object> response = postWithApiKeyFailover("/embeddings", payload);
 
             return extractEmbedding(response);
-        } catch (RestClientResponseException ex) {
-            if (isLocalOllama() && ex.getStatusCode().value() == 404) {
-                return embeddingWithOllamaFallback(input, embeddingModel);
-            }
-            throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_GATEWAY,
-                "Embedding provider call failed: " + ex.getMessage(), ex);
         } catch (RestClientException ex) {
             throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_GATEWAY,
                 "Embedding provider call failed: " + ex.getMessage(), ex);
@@ -179,45 +168,6 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Retry interrupted", interruptedException);
         }
-    }
-
-    private List<Double> embeddingWithOllamaFallback(String input, String embeddingModel) {
-        Map<String, Object> payload = Map.of(
-            "model", embeddingModel,
-            "input", input == null ? "" : input
-        );
-
-        Map<String, Object> response = withRetry(() -> ollamaRestClient.post()
-            .uri("/api/embed")
-            .body(payload)
-            .retrieve()
-            .body(Objects.requireNonNull(MAP_TYPE)));
-
-        Object embeddingsRaw = response == null ? null : response.get("embeddings");
-        if (embeddingsRaw instanceof List<?> embeddings && !embeddings.isEmpty()) {
-            Object first = embeddings.getFirst();
-            if (first instanceof List<?> values) {
-                return values.stream()
-                    .filter(Number.class::isInstance)
-                    .map(Number.class::cast)
-                    .map(Number::doubleValue)
-                    .collect(Collectors.toList());
-            }
-        }
-
-        return extractEmbedding(response);
-    }
-
-    private boolean isLocalOllama() {
-        String baseUrl = properties.getBaseUrl();
-        return baseUrl != null && baseUrl.contains("localhost:11434");
-    }
-
-    private String stripV1Suffix(String baseUrl) {
-        if (!StringUtils.hasText(baseUrl)) {
-            return "http://localhost:11434";
-        }
-        return baseUrl.endsWith("/v1") ? baseUrl.substring(0, baseUrl.length() - 3) : baseUrl;
     }
 
     private String extractContent(Map<String, Object> response) {
