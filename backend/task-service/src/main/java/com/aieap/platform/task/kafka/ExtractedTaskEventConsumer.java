@@ -1,5 +1,6 @@
 package com.aieap.platform.task.kafka;
 
+import com.aieap.platform.task.kafka.events.TaskCreatedEvent;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
@@ -26,6 +27,9 @@ public class ExtractedTaskEventConsumer {
 
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
 
     @KafkaListener(topics = "extracted.task.created", groupId = "task-service")
     public void onExtractedTask(
@@ -85,6 +89,28 @@ public class ExtractedTaskEventConsumer {
         );
 
         log.info("[KAFKA] Task auto-created id={} from emailId={} correlationId={}", taskId, emailId, correlationId);
+
+        if (kafkaEventPublisher != null) {
+            kafkaEventPublisher.publish(
+                "task.created",
+                taskId,
+                new TaskCreatedEvent(
+                    UUID.randomUUID().toString(),
+                    correlationId,
+                    taskId,
+                    suggestedTitle,
+                    "Auto-created from email extraction (confidence=" + confidence + ")",
+                    null,
+                    "MEDIUM",
+                    "PENDING",
+                    "email-extraction",
+                    null,
+                    null,
+                    java.time.OffsetDateTime.now().toString()
+                ),
+                correlationId
+            );
+        }
     }
 
     private String parseUuidOrNull(String value) {

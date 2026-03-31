@@ -95,3 +95,5 @@ target/
 # OS files
 .DS_Store
 Thumbs.db
+
+backend/scripts/

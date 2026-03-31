@@ -28,6 +28,71 @@ public class NotificationEventConsumer {
     private JdbcTemplate jdbcTemplate;
 
     // -------------------------------------------------------------------------
+    // task.created
+    // -------------------------------------------------------------------------
+    @KafkaListener(topics = "task.created", groupId = "notification-service")
+    public void onTaskCreated(
+        @Payload Map<String, Object> event,
+        @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
+        @Header(value = "X-Correlation-ID", required = false) byte[] correlationIdBytes
+    ) {
+        String correlationId = extractCorrelationId(correlationIdBytes);
+        String targetUserId = (String) event.get("targetUserId");
+        String assigneeUserId = (String) event.get("assigneeUserId");
+        String taskId = (String) event.getOrDefault("taskId", "");
+        String title = (String) event.getOrDefault("title", "New Task");
+        String priority = (String) event.getOrDefault("priority", "MEDIUM");
+        String source = (String) event.getOrDefault("source", "system");
+        String dueAt = (String) event.get("dueAt");
+
+        log.info("[KAFKA] Received task.created correlationId={} taskId={} title='{}' priority={}",
+            correlationId, taskId, title, priority);
+
+        // Notify assignee first; fall back to event target user or first active user
+        String notifyUserId = assigneeUserId != null && !assigneeUserId.isBlank() ? assigneeUserId
+            : targetUserId;
+
+        String message = "Priority: " + priority + " | Source: " + source
+            + (dueAt != null ? " | Due: " + dueAt : "");
+
+        createNotification(
+            "TASK_CREATED",
+            "New task: " + title,
+            message,
+            notifyUserId,
+            correlationId
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // task.status_changed
+    // -------------------------------------------------------------------------
+    @KafkaListener(topics = "task.status_changed", groupId = "notification-service")
+    public void onTaskStatusChanged(
+        @Payload Map<String, Object> event,
+        @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
+        @Header(value = "X-Correlation-ID", required = false) byte[] correlationIdBytes
+    ) {
+        String correlationId = extractCorrelationId(correlationIdBytes);
+        String targetUserId = (String) event.get("assigneeUserId");
+        String taskId = (String) event.getOrDefault("taskId", "");
+        String title = (String) event.getOrDefault("title", "Task");
+        String previousStatus = (String) event.getOrDefault("previousStatus", "");
+        String newStatus = (String) event.getOrDefault("newStatus", "");
+
+        log.info("[KAFKA] Received task.status_changed correlationId={} taskId={} {}->{}",
+            correlationId, taskId, previousStatus, newStatus);
+
+        createNotification(
+            "TASK_STATUS_CHANGED",
+            "Task updated: " + title,
+            "Status changed from " + previousStatus + " to " + newStatus + ".",
+            targetUserId,
+            correlationId
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // new.email.ingested
     // -------------------------------------------------------------------------
     @KafkaListener(topics = "new.email.ingested", groupId = "notification-service")

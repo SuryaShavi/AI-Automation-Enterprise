@@ -14,7 +14,11 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -23,6 +27,8 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -52,15 +58,18 @@ public class DocumentController {
     private final DocumentRagService documentRagService;
     private final LlmClient llmClient;
     private final QdrantVectorStoreClient qdrantVectorStoreClient;
+    private final DocumentIndexingService documentIndexingService;
 
     public DocumentController(
         DocumentRagService documentRagService,
         LlmClient llmClient,
-        QdrantVectorStoreClient qdrantVectorStoreClient
+        QdrantVectorStoreClient qdrantVectorStoreClient,
+        DocumentIndexingService documentIndexingService
     ) {
         this.documentRagService = documentRagService;
         this.llmClient = llmClient;
         this.qdrantVectorStoreClient = qdrantVectorStoreClient;
+        this.documentIndexingService = documentIndexingService;
     }
 
     @Autowired(required = false)
@@ -72,6 +81,7 @@ public class DocumentController {
     @PostMapping(path = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
+    @CacheEvict(value = "documents", allEntries = true)
     public ApiEnvelope<DocumentItem> upload(
         @RequestPart("file") MultipartFile file,
         @RequestPart(value = "ownerUserId", required = false) @NullOrValidUuid String ownerUserId,
@@ -116,20 +126,15 @@ public class DocumentController {
             );
         }
 
-        // Update status to INDEXING before async vector indexing
+        // Schedule async vector indexing — upload returns immediately with status INDEXING.
+        // DocumentIndexingService will update status to READY (or FAILED) when done.
         if (!processed.chunks().isEmpty()) {
             db.update(
                 "UPDATE aieap.documents SET processing_status = ?, updated_at = NOW() WHERE id = ?::uuid",
                 "INDEXING",
                 id
             );
-            indexChunksInVectorStore(id, chunkIds, processed.chunks());
-            // Update status to READY after successful indexing
-            db.update(
-                "UPDATE aieap.documents SET processing_status = ?, updated_at = NOW() WHERE id = ?::uuid",
-                "READY",
-                id
-            );
+            documentIndexingService.indexDocumentAsync(id, chunkIds, processed.chunks());
         }
 
         DocumentItem document = document(id);
@@ -157,6 +162,7 @@ public class DocumentController {
     }
 
     @GetMapping
+    @Cacheable(value = "documents", key = "'list:p=' + #page + ':s=' + #size")
     public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
         List<DocumentItem> items = loadDocuments();
         int fromIndex = Math.min(page * size, items.size());
@@ -170,6 +176,7 @@ public class DocumentController {
     }
 
     @PostMapping("/{id}/ask")
+    @Cacheable(value = "doc-answers", key = "#id + ':' + #askDocumentRequest.question().toLowerCase().strip()")
     public ApiEnvelope<DocumentAnswer> ask(@PathVariable UUID id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
         String documentId = id.toString();
         String question = InputSanitizer.requiredText(askDocumentRequest.question());
@@ -213,7 +220,7 @@ public class DocumentController {
                 rs.getLong("file_size"),
                 rs.getString("processing_status"),
                 rs.getString("summary"),
-                rs.getObject("created_at", OffsetDateTime.class)
+                readOffsetDateTime(rs, "created_at")
             ),
             id
         );
@@ -223,7 +230,6 @@ public class DocumentController {
         }
         return document;
     }
-
     private List<DocumentItem> loadDocuments() {
         JdbcTemplate db = requireJdbc();
         return db.query(
@@ -235,7 +241,7 @@ public class DocumentController {
                 rs.getLong("file_size"),
                 rs.getString("processing_status"),
                 rs.getString("summary"),
-                rs.getObject("created_at", OffsetDateTime.class)
+                readOffsetDateTime(rs, "created_at")
             )
         );
     }
@@ -342,48 +348,10 @@ public class DocumentController {
     }
 
     private void indexChunksInVectorStore(String documentId, List<String> chunkIds, List<String> chunks) {
-        if (!llmClient.isConfigured() || !qdrantVectorStoreClient.isAvailable()) {
-            return;
-        }
-
-        JdbcTemplate db = requireJdbc();
-        boolean collectionReady = false;
-
-        for (int i = 0; i < chunks.size(); i++) {
-            String content = chunks.get(i);
-            String chunkId = chunkIds.get(i);
-            try {
-                List<Double> embedding = llmClient.embedding(content);
-                if (embedding.isEmpty()) {
-                    continue;
-                }
-
-                if (!collectionReady) {
-                    qdrantVectorStoreClient.ensureCollection(embedding.size());
-                    collectionReady = true;
-                }
-
-                String pointId = documentId + "-" + i;
-                qdrantVectorStoreClient.upsertPoint(
-                    pointId,
-                    embedding,
-                    Map.of(
-                        "documentId", documentId,
-                        "chunkId", chunkId,
-                        "chunkIndex", i,
-                        "citationLabel", "upload-" + i
-                    )
-                );
-
-                db.update(
-                    "UPDATE aieap.document_chunks SET vector_id = ? WHERE id = ?::uuid",
-                    pointId,
-                    chunkId
-                );
-            } catch (Exception ex) {
-                LOGGER.warn("Failed to index chunk {} for document {} into vector store", chunkId, documentId, ex);
-            }
-        }
+        // Delegation to DocumentIndexingService.indexDocumentAsync() which runs in a
+        // background thread. This method is retained for reference only; the async
+        // service contains the active implementation.
+        documentIndexingService.indexDocumentAsync(documentId, chunkIds, chunks);
     }
 
     private JdbcTemplate requireJdbc() {
@@ -412,6 +380,20 @@ public class DocumentController {
 
     private int estimateTokenCount(String content) {
         return documentRagService.estimateTokenCount(content);
+    }
+
+    private OffsetDateTime readOffsetDateTime(ResultSet rs, String column) throws SQLException {
+        Object value = rs.getObject(column);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof OffsetDateTime offsetDateTime) {
+            return offsetDateTime;
+        }
+        if (value instanceof Timestamp timestamp) {
+            return timestamp.toInstant().atOffset(ZoneOffset.UTC);
+        }
+        return rs.getTimestamp(column).toInstant().atOffset(ZoneOffset.UTC);
     }
 
     /**

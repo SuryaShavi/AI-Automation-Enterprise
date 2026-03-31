@@ -7,6 +7,8 @@ import com.aieap.platform.common.ResponseFactory;
 import com.aieap.platform.common.validation.AllowedValues;
 import com.aieap.platform.common.validation.NullOrNotBlank;
 import com.aieap.platform.common.validation.NullOrValidUuid;
+import com.aieap.platform.task.kafka.KafkaEventPublisher;
+import com.aieap.platform.task.kafka.events.TaskCreatedEvent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -15,12 +17,18 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -50,11 +58,15 @@ public class TaskController {
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
+
     public TaskController(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
     @GetMapping
+    @Cacheable(value = "tasks", key = "'list:p=' + #page + ':s=' + #size + ':st=' + #status + ':pr=' + #priority + ':so=' + #sort")
     public ApiEnvelope<PageEnvelope<TaskItem>> listTasks(
         @RequestParam(defaultValue = "0") @Min(0) int page,
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
@@ -78,6 +90,7 @@ public class TaskController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
+    @CacheEvict(value = "tasks", allEntries = true)
     public ApiEnvelope<TaskItem> createTask(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody CreateTaskRequest createTaskRequest,
@@ -108,11 +121,13 @@ public class TaskController {
             metadataJson
         );
         TaskItem task = task(id);
+        publishTaskCreatedEvent(task, request.getHeader("X-Correlation-ID"));
         return ResponseFactory.success(request, task);
     }
 
     @PatchMapping("/{id}")
     @Transactional
+    @CacheEvict(value = "tasks", allEntries = true)
     public ApiEnvelope<TaskItem> updateTask(
         @PathVariable UUID id,
         @Valid @RequestBody UpdateTaskRequest updateTaskRequest,
@@ -154,6 +169,7 @@ public class TaskController {
 
     @DeleteMapping("/{id}")
     @Transactional
+    @CacheEvict(value = "tasks", allEntries = true)
     public ApiEnvelope<Map<String, String>> deleteTask(@PathVariable UUID id, HttpServletRequest request) {
         String taskId = id.toString();
         JdbcTemplate db = requireJdbc();
@@ -162,6 +178,7 @@ public class TaskController {
     }
 
     @GetMapping("/board")
+    @Cacheable(value = "tasks", key = "'board'")
     public ApiEnvelope<TaskBoardResponse> board(HttpServletRequest request) {
         List<TaskItem> items = loadTasks();
         List<BoardColumn> columns = List.of(
@@ -177,7 +194,17 @@ public class TaskController {
         List<TaskItem> rows = db.query(
             "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
             "FROM aieap.tasks WHERE id = ?::uuid",
-            (rs, rowNum) -> mapTask(rs.getString("id"), rs.getString("title"), rs.getString("description"), rs.getString("assignee_user_id"), rs.getString("priority"), rs.getString("status"), rs.getObject("due_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class), rs.getString("metadata_json")),
+            (rs, rowNum) -> mapTask(
+                rs.getString("id"),
+                rs.getString("title"),
+                rs.getString("description"),
+                rs.getString("assignee_user_id"),
+                rs.getString("priority"),
+                rs.getString("status"),
+                readOffsetDateTime(rs, "due_at"),
+                readOffsetDateTime(rs, "updated_at"),
+                rs.getString("metadata_json")
+            ),
             id
         );
         TaskItem task = rows.isEmpty() ? null : rows.getFirst();
@@ -191,7 +218,17 @@ public class TaskController {
         JdbcTemplate db = requireJdbc();
         return db.query(
             "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json FROM aieap.tasks",
-            (rs, rowNum) -> mapTask(rs.getString("id"), rs.getString("title"), rs.getString("description"), rs.getString("assignee_user_id"), rs.getString("priority"), rs.getString("status"), rs.getObject("due_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class), rs.getString("metadata_json"))
+            (rs, rowNum) -> mapTask(
+                rs.getString("id"),
+                rs.getString("title"),
+                rs.getString("description"),
+                rs.getString("assignee_user_id"),
+                rs.getString("priority"),
+                rs.getString("status"),
+                readOffsetDateTime(rs, "due_at"),
+                readOffsetDateTime(rs, "updated_at"),
+                rs.getString("metadata_json")
+            )
         );
     }
 
@@ -244,12 +281,54 @@ public class TaskController {
         }
     }
 
+    private OffsetDateTime readOffsetDateTime(ResultSet rs, String column) throws SQLException {
+        Object value = rs.getObject(column);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof OffsetDateTime offsetDateTime) {
+            return offsetDateTime;
+        }
+        if (value instanceof Timestamp timestamp) {
+            return timestamp.toInstant().atOffset(ZoneOffset.UTC);
+        }
+        return rs.getTimestamp(column).toInstant().atOffset(ZoneOffset.UTC);
+    }
+
     private Comparator<TaskItem> resolveComparator(String sort) {
         return switch (sort) {
             case "priority" -> Comparator.comparing(TaskItem::priority);
-            case "createdAt" -> Comparator.comparing(TaskItem::updatedAt).reversed();
-            default -> Comparator.comparing(TaskItem::dueAt);
+            case "createdAt" -> Comparator.comparing(TaskItem::updatedAt, Comparator.nullsLast(Comparator.naturalOrder())).reversed();
+            default -> Comparator.comparing(TaskItem::dueAt, Comparator.nullsLast(Comparator.naturalOrder()));
         };
+    }
+
+    private void publishTaskCreatedEvent(TaskItem task, String incomingCorrelationId) {
+        if (kafkaEventPublisher == null) {
+            return;
+        }
+        String correlationId = (incomingCorrelationId != null && !incomingCorrelationId.isBlank())
+            ? incomingCorrelationId
+            : UUID.randomUUID().toString();
+        kafkaEventPublisher.publish(
+            "task.created",
+            task.id(),
+            new TaskCreatedEvent(
+                UUID.randomUUID().toString(),
+                correlationId,
+                task.id(),
+                task.title(),
+                task.description(),
+                task.assigneeUserId(),
+                task.priority(),
+                task.status(),
+                task.source(),
+                task.assigneeUserId(),
+                task.dueAt(),
+                java.time.OffsetDateTime.now().toString()
+            ),
+            correlationId
+        );
     }
 
     public record TaskItem(String id, String title, String description, String assigneeUserId, String priority, String status, OffsetDateTime dueAt, OffsetDateTime updatedAt, String source) {
