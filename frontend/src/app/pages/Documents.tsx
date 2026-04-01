@@ -27,6 +27,7 @@ export default function Documents() {
           return;
         }
         setDocuments(envelope.data.items);
+        setError(null);
       } catch (loadError) {
         if (active) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load documents");
@@ -47,6 +48,7 @@ export default function Documents() {
         const envelope = await apiClient.request<{ items: DocumentItem[] }>(endpoints.documents.list);
         if (active) {
           const items = envelope.data.items;
+          setError(null);
           if (items.some((doc) => doc.processingStatus !== "READY" && doc.processingStatus !== "FAILED")) {
             setDocuments(items);
           }
@@ -70,10 +72,12 @@ export default function Documents() {
   async function handleSelectDocument(id: string) {
     setSelectedDocId(id);
     setAiAnswer(null);
+    setError(null);
 
     try {
       const envelope = await apiClient.request<DocumentItem>(endpoints.documents.detail(id));
       setSelectedDoc(envelope.data);
+      setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load document details");
     }
@@ -87,6 +91,7 @@ export default function Documents() {
 
     const body = new FormData();
     body.append("file", file);
+    setError(null);
 
     try {
       const envelope = await apiClient.request<DocumentItem>(endpoints.documents.upload, {
@@ -94,6 +99,7 @@ export default function Documents() {
         body,
       });
       setDocuments((previous) => [envelope.data, ...previous]);
+      setError(null);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Failed to upload document");
     } finally {

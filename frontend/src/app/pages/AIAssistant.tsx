@@ -45,6 +45,7 @@ export default function AIAssistant() {
           return;
         }
         setChats(envelope.data);
+        setError(null);
       } catch (loadError) {
         if (active) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load chat history");
