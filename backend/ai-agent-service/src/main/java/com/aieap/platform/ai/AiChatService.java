@@ -97,8 +97,7 @@ public class AiChatService {
         if (!llmClient.isConfigured()) {
             guardrails.add("provider:not-configured");
             return buildResult(
-                "AI provider key is missing. Ollama is running locally at http://localhost:11434. " +
-                "Make sure Ollama is started and llama3.2 model is pulled (ollama pull llama3.2).",
+                "AI provider key is missing. Add `AI_PROVIDER_API_KEY` or `OPENAI_API_KEY` to `backend/.env`, then restart the backend service.",
                 guardrails,
                 List.of(),
                 GroundingContext.empty(),
@@ -150,7 +149,7 @@ public class AiChatService {
             completion = completion.trim() + "\n\nSources: " + String.join(", ", groundingContext.citations().stream().limit(3).toList());
         }
 
-        guardrails.add("provider:ollama-compatible");
+        guardrails.add("provider:openai-compatible");
         guardrails.add("orchestration:tool-planner");
         return buildResult(completion, guardrails, plannedTools, groundingContext, false);
     }

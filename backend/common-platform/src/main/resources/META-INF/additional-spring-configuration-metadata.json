@@ -3,7 +3,7 @@
     {
       "name": "ai.provider.base-url",
       "type": "java.lang.String",
-      "description": "Base URL for the OpenAI-compatible LLM provider (e.g. http://localhost:11434/v1).",
+      "description": "Base URL for the OpenAI-compatible LLM provider (e.g. https://api.openai.com/v1).",
       "defaultValue": "https://api.openai.com/v1"
     },
     {

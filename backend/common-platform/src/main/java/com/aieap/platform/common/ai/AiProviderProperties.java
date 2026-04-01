@@ -52,18 +52,25 @@ public class AiProviderProperties {
 
     public List<String> getApiKeyCandidates() {
         LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>();
-        if (StringUtils.hasText(apiKey)) {
-            uniqueKeys.add(apiKey.trim());
+        addCandidates(uniqueKeys, apiKey);
+        addCandidates(uniqueKeys, apiKeyRotation);
+        addCandidates(uniqueKeys, System.getProperty("AI_PROVIDER_API_KEY"));
+        addCandidates(uniqueKeys, System.getProperty("OPENAI_API_KEY"));
+        addCandidates(uniqueKeys, System.getenv("AI_PROVIDER_API_KEY"));
+        addCandidates(uniqueKeys, System.getenv("OPENAI_API_KEY"));
+        return new ArrayList<>(uniqueKeys);
+    }
+
+    private void addCandidates(LinkedHashSet<String> uniqueKeys, String rawCandidates) {
+        if (!StringUtils.hasText(rawCandidates)) {
+            return;
         }
-        if (StringUtils.hasText(apiKeyRotation)) {
-            for (String candidate : apiKeyRotation.split(",")) {
-                String trimmed = candidate.trim();
-                if (!trimmed.isEmpty()) {
-                    uniqueKeys.add(trimmed);
-                }
+        for (String candidate : rawCandidates.split(",")) {
+            String trimmed = candidate.trim();
+            if (!trimmed.isEmpty()) {
+                uniqueKeys.add(trimmed);
             }
         }
-        return new ArrayList<>(uniqueKeys);
     }
 
     public String getModel() {

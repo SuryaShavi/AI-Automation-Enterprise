@@ -9,7 +9,6 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-import org.springframework.data.annotation.CreatedDate;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
@@ -42,7 +41,6 @@ public class ChatAttachment {
     @Column(nullable = false, length = 30, name = "processing_status")
     private String processingStatus = "PENDING";
 
-    @CreatedDate
     @Column(name = "uploaded_at", nullable = false)
     private OffsetDateTime uploadedAt = OffsetDateTime.now();
 

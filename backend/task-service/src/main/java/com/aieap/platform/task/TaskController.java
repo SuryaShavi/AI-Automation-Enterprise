@@ -83,8 +83,9 @@ public class TaskController {
 
         int fromIndex = Math.min(page * size, filtered.size());
         int toIndex = Math.min(fromIndex + size, filtered.size());
+        List<TaskItem> pageItems = new java.util.ArrayList<>(filtered.subList(fromIndex, toIndex));
 
-        return ResponseFactory.success(request, new PageEnvelope<>(filtered.subList(fromIndex, toIndex), page, size, filtered.size(), sort));
+        return ResponseFactory.success(request, new PageEnvelope<>(pageItems, page, size, filtered.size(), sort));
     }
 
     @PostMapping
@@ -182,9 +183,9 @@ public class TaskController {
     public ApiEnvelope<TaskBoardResponse> board(HttpServletRequest request) {
         List<TaskItem> items = loadTasks();
         List<BoardColumn> columns = List.of(
-            new BoardColumn("PENDING", items.stream().filter(task -> "PENDING".equals(task.status())).toList()),
-            new BoardColumn("IN_PROGRESS", items.stream().filter(task -> "IN_PROGRESS".equals(task.status())).toList()),
-            new BoardColumn("COMPLETED", items.stream().filter(task -> "COMPLETED".equals(task.status())).toList())
+            new BoardColumn("PENDING", new java.util.ArrayList<>(items.stream().filter(task -> "PENDING".equals(task.status())).toList())),
+            new BoardColumn("IN_PROGRESS", new java.util.ArrayList<>(items.stream().filter(task -> "IN_PROGRESS".equals(task.status())).toList())),
+            new BoardColumn("COMPLETED", new java.util.ArrayList<>(items.stream().filter(task -> "COMPLETED".equals(task.status())).toList()))
         );
         return ResponseFactory.success(request, new TaskBoardResponse(columns));
     }

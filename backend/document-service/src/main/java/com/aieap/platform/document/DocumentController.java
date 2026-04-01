@@ -167,7 +167,8 @@ public class DocumentController {
         List<DocumentItem> items = loadDocuments();
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
-        return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "createdAt,DESC"));
+        List<DocumentItem> pageItems = new ArrayList<>(items.subList(fromIndex, toIndex));
+        return ResponseFactory.success(request, new PageEnvelope<>(pageItems, page, size, items.size(), "createdAt,DESC"));
     }
 
     @GetMapping("/{id}")
@@ -198,7 +199,7 @@ public class DocumentController {
             question,
             answer,
             confidence,
-            citations
+            new ArrayList<>(citations)
         ));
     }
 
