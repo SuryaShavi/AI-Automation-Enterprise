@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -47,6 +48,7 @@ public class AuthController {
 
     private final ConcurrentHashMap<String, ManagedUser> usersByEmail = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ManagedUser> usersById = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, ManagedUser> usersByCode = new ConcurrentHashMap<>();
     private final TokenRevocationStore tokenRevocationStore;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
@@ -138,8 +140,9 @@ public class AuthController {
         UUID newId = UUID.randomUUID();
         Set<String> newRoles = ConcurrentHashMap.newKeySet();
         newRoles.add("EMPLOYEE");
+        long userCode = allocateUserCode(newRoles);
         ManagedUser newUser = new ManagedUser(
-            newId, email,
+            newId, userCode, email,
             InputSanitizer.requiredText(request.firstName()),
             InputSanitizer.requiredText(request.lastName()),
             passwordEncoder.encode(request.password()),
@@ -167,6 +170,18 @@ public class AuthController {
     public ApiEnvelope<UserProfile> currentUserProfile(JwtAuthenticationToken authentication,
                                                         HttpServletRequest servletRequest) {
         return ResponseFactory.success(servletRequest, toProfile(currentUser(authentication)));
+    }
+
+    @GetMapping("/users/by-code/{userCode}")
+    public ApiEnvelope<UserProfile> userByCode(@PathVariable long userCode,
+                                                JwtAuthenticationToken authentication,
+                                                HttpServletRequest servletRequest) {
+        currentUser(authentication);
+        ManagedUser user = resolveUserByCode(userCode);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+        return ResponseFactory.success(servletRequest, toProfile(user));
     }
 
     @PatchMapping("/users/me")
@@ -254,6 +269,9 @@ public class AuthController {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private ManagedUser currentUser(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
         ManagedUser user = usersById.get(authentication.getToken().getClaimAsString("userId"));
         if (user == null) {
             String userIdClaim = authentication.getToken().getClaimAsString("userId");
@@ -283,7 +301,7 @@ public class AuthController {
     }
 
     private UserProfile toProfile(ManagedUser user) {
-        return new UserProfile(user.id, user.email, user.firstName, user.lastName,
+        return new UserProfile(user.id, user.userCode, user.email, user.firstName, user.lastName,
             user.roles, user.preferences, user.twoFactorEnabled, user.lastLoginAt);
     }
 
@@ -299,6 +317,14 @@ public class AuthController {
         return loadUserByEmailFromDatabase(email);
     }
 
+    private ManagedUser resolveUserByCode(long userCode) {
+        ManagedUser cached = usersByCode.get(userCode);
+        if (cached != null) {
+            return cached;
+        }
+        return loadUserByCodeFromDatabase(userCode);
+    }
+
     private boolean emailExistsInDatabase(String email) {
         JdbcTemplate db = requireJdbc();
         Integer count = db.queryForObject(
@@ -308,13 +334,29 @@ public class AuthController {
         return count != null && count > 0;
     }
 
+    private long allocateUserCode(Set<String> roles) {
+        JdbcTemplate db = requireJdbc();
+        boolean isAdmin = roles != null && roles.stream().anyMatch(role -> "ADMIN".equalsIgnoreCase(role));
+        try {
+            Long allocated = db.queryForObject("SELECT aieap.next_user_code(?)", Long.class, isAdmin);
+            if (allocated == null) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Unable to allocate user code");
+            }
+            return allocated;
+        } catch (ResponseStatusException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Unable to allocate user code", ex);
+        }
+    }
+
     private void persistNewUserToDatabase(ManagedUser user) {
         JdbcTemplate db = requireJdbc();
         try {
             int inserted = db.update(
-                "INSERT INTO aieap.users (id, email, first_name, last_name, password_hash, status, preferences_json, two_factor_enabled) " +
-                "VALUES (?::uuid, ?, ?, ?, ?, 'ACTIVE', ?::jsonb, ?) ON CONFLICT (email) DO NOTHING",
-                user.id.toString(), user.email, user.firstName, user.lastName, user.passwordHash,
+                "INSERT INTO aieap.users (id, user_code, email, first_name, last_name, password_hash, status, preferences_json, two_factor_enabled) " +
+                "VALUES (?::uuid, ?, ?, ?, ?, ?, 'ACTIVE', ?::jsonb, ?) ON CONFLICT (email) DO NOTHING",
+                user.id.toString(), user.userCode, user.email, user.firstName, user.lastName, user.passwordHash,
                 toJson(user.preferences), user.twoFactorEnabled);
             if (inserted == 0) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "An account with this email already exists");
@@ -418,14 +460,14 @@ public class AuthController {
         }
         try {
             return jdbcTemplate.query(
-                "SELECT u.id, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "SELECT u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, " +
                 "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
                 "STRING_AGG(r.code, ',') AS roles " +
                 "FROM aieap.users u " +
                 "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
                 "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
                 "WHERE u.status = 'ACTIVE' AND lower(u.email) = ? " +
-                "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                "GROUP BY u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
                 rs -> {
                     if (!rs.next()) {
                         return null;
@@ -446,14 +488,14 @@ public class AuthController {
         }
         try {
             return jdbcTemplate.query(
-                "SELECT u.id, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "SELECT u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, " +
                 "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
                 "STRING_AGG(r.code, ',') AS roles " +
                 "FROM aieap.users u " +
                 "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
                 "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
                 "WHERE u.status = 'ACTIVE' AND u.id = ?::uuid " +
-                "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                "GROUP BY u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
                 rs -> {
                     if (!rs.next()) {
                         return null;
@@ -468,8 +510,37 @@ public class AuthController {
         }
     }
 
+    private ManagedUser loadUserByCodeFromDatabase(long userCode) {
+        if (jdbcTemplate == null) {
+            return null;
+        }
+        try {
+            return jdbcTemplate.query(
+                "SELECT u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
+                "STRING_AGG(r.code, ',') AS roles " +
+                "FROM aieap.users u " +
+                "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
+                "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
+                "WHERE u.status = 'ACTIVE' AND u.user_code = ? " +
+                "GROUP BY u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    ManagedUser loaded = mapManagedUser(rs);
+                    register(loaded);
+                    return loaded;
+                },
+                userCode);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private ManagedUser mapManagedUser(java.sql.ResultSet rs) throws java.sql.SQLException {
         UUID id = UUID.fromString(rs.getString("id"));
+        long userCode = rs.getLong("user_code");
         String email = Objects.requireNonNullElse(rs.getString("email"), "").toLowerCase();
         String firstName = rs.getString("first_name");
         String lastName = rs.getString("last_name");
@@ -486,7 +557,7 @@ public class AuthController {
             roles.add("EMPLOYEE");
         }
         Map<String, String> preferences = parsePreferencesJson(rs.getString("preferences_json"));
-        return new ManagedUser(id, email, firstName, lastName, passwordHash,
+        return new ManagedUser(id, userCode, email, firstName, lastName, passwordHash,
             roles, new ConcurrentHashMap<>(preferences), twoFactorEnabled, lastLoginAt);
     }
 
@@ -494,14 +565,14 @@ public class AuthController {
         if (jdbcTemplate == null) return false;
         try {
             jdbcTemplate.query(
-                "SELECT u.id, u.email, u.first_name, u.last_name, u.password_hash, " +
+                "SELECT u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, " +
                 "u.two_factor_enabled, u.last_login_at, u.preferences_json::text AS preferences_json, " +
                 "STRING_AGG(r.code, ',') AS roles " +
                 "FROM aieap.users u " +
                 "LEFT JOIN aieap.user_roles ur ON u.id = ur.user_id " +
                 "LEFT JOIN aieap.roles r ON r.id = ur.role_id " +
                 "WHERE u.status = 'ACTIVE' " +
-                "GROUP BY u.id, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
+                "GROUP BY u.id, u.user_code, u.email, u.first_name, u.last_name, u.password_hash, u.two_factor_enabled, u.last_login_at, u.preferences_json",
                 (ResultSetExtractor<Void>) rs -> {
                     while (rs.next()) {
                         ManagedUser dbUser = mapManagedUser(rs);
@@ -518,12 +589,14 @@ public class AuthController {
     private void register(ManagedUser user) {
         usersByEmail.put(user.email, user);
         usersById.put(user.id.toString(), user);
+        usersByCode.put(user.userCode, user);
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────
 
     public static final class ManagedUser {
         final UUID id;
+        final long userCode;
         final String email;
         String firstName;
         String lastName;
@@ -533,11 +606,12 @@ public class AuthController {
         boolean twoFactorEnabled;
         Instant lastLoginAt;
 
-        public ManagedUser(UUID id, String email, String firstName, String lastName,
+        public ManagedUser(UUID id, long userCode, String email, String firstName, String lastName,
                            String passwordHash, Set<String> roles,
                            ConcurrentHashMap<String, String> preferences,
                            boolean twoFactorEnabled, Instant lastLoginAt) {
             this.id = id;
+            this.userCode = userCode;
             this.email = email;
             this.firstName = firstName;
             this.lastName = lastName;
@@ -569,7 +643,7 @@ public class AuthController {
         UserProfile user) {}
 
     public record UserProfile(
-        UUID id, String email, String firstName, String lastName,
+        UUID id, long userCode, String email, String firstName, String lastName,
         Set<String> roles, Map<String, String> preferences,
         boolean twoFactorEnabled, Instant lastLoginAt) {}
 

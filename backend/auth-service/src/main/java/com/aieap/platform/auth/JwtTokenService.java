@@ -61,6 +61,7 @@ public class JwtTokenService {
             .claims(existing -> existing.putAll(Map.of(
                 "type", type,
                 "userId", user.id.toString(),
+                "userCode", user.userCode,
                 "roles", Set.copyOf(user.roles)
             )))
             .build();

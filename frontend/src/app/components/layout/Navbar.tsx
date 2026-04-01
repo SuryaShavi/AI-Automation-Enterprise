@@ -10,6 +10,7 @@ export default function Navbar() {
 
   const displayName = user ? `${user.firstName} ${user.lastName}` : 'Unknown User';
   const roleName = user?.roles[0] ?? 'EMPLOYEE';
+  const businessId = user?.userCode ? `ID ${user.userCode}` : 'ID pending';
   const organization = user?.preferences.organization ?? 'AI Enterprise Platform';
 
   async function handleLogout() {
@@ -57,7 +58,7 @@ export default function Navbar() {
         <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
           <div className="text-right">
             <p className="text-sm font-medium text-gray-700">{displayName}</p>
-            <p className="text-xs text-gray-500">{roleName}</p>
+            <p className="text-xs text-gray-500">{roleName} • {businessId}</p>
           </div>
           <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center">
             <User size={20} className="text-white" />

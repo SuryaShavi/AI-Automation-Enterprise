@@ -23,6 +23,7 @@ export interface PageEnvelope<T> {
 
 export interface UserProfile {
   id: string;
+  userCode?: number;
   email: string;
   firstName: string;
   lastName: string;
