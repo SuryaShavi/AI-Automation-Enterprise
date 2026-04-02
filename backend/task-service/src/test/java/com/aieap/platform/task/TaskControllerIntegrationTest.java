@@ -52,7 +52,7 @@ class TaskControllerIntegrationTest {
     @Test
     void createTaskRejectsBlankTitle() throws Exception {
         mockMvc.perform(post("/tasks")
-                .with(jwt())
+                .with(jwt().jwt(jwt -> jwt.claim("userId", "11111111-1111-1111-1111-111111111111")))
                 .contentType(APPLICATION_JSON)
                 .content("""
                     {

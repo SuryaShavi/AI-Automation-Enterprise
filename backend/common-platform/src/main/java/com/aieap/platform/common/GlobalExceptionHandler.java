@@ -10,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -129,13 +131,23 @@ public class GlobalExceptionHandler {
         DataAccessException exception,
         HttpServletRequest request
     ) {
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new ApiEnvelope<>(
+        HttpStatus status = HttpStatus.SERVICE_UNAVAILABLE;
+        String message = "Database is unavailable or schema is incomplete. Ensure PostgreSQL is running and migrations are applied.";
+
+        if (exception instanceof DataIntegrityViolationException) {
+            status = HttpStatus.UNAUTHORIZED;
+            message = "Your session user is no longer valid for current data constraints. Please sign in again.";
+        } else if (exception instanceof BadSqlGrammarException) {
+            message = "Database schema is out of date. Ensure Flyway migrations are applied.";
+        }
+
+        return ResponseEntity.status(status).body(new ApiEnvelope<>(
             Instant.now(),
             ResponseFactory.traceId(request),
             null,
             new ApiError(
                 "DATABASE_UNAVAILABLE",
-                "Database is unavailable or schema is incomplete. Ensure PostgreSQL is running and migrations are applied.",
+                message,
                 List.of(exception.getClass().getSimpleName())
             )
         ));

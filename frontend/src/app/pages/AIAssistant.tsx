@@ -139,13 +139,19 @@ export default function AIAssistant() {
       return;
     }
 
-    if (!serverChatId) {
-      setError("Send your first message to create a chat session before attaching files.");
-      event.target.value = "";
-      return;
-    }
+    let targetChatId = serverChatId;
 
     try {
+      if (!targetChatId) {
+        const chatEnvelope = await apiClient.request<ChatSummary>(endpoints.ai.createChat, {
+          method: "POST",
+        });
+        targetChatId = chatEnvelope.data.id;
+        setServerChatId(targetChatId);
+        setActiveChatId(targetChatId);
+        setChats((previous) => [chatEnvelope.data, ...previous.filter((chat) => chat.id !== chatEnvelope.data.id)]);
+      }
+
       const uploadBody = new FormData();
       uploadBody.append("file", file);
       const documentEnvelope = await apiClient.request<DocumentItem>(endpoints.documents.upload, {
@@ -153,7 +159,7 @@ export default function AIAssistant() {
         body: uploadBody,
       });
 
-      await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(serverChatId), {
+      await apiClient.request<AttachmentReceipt>(endpoints.ai.attachments(targetChatId), {
         method: "POST",
         body: {
           fileName: file.name,
@@ -276,9 +282,8 @@ export default function AIAssistant() {
             <input ref={attachmentInputRef} type="file" className="hidden" onChange={(event) => void handleAttachment(event)} />
             <button
               onClick={() => attachmentInputRef.current?.click()}
-              disabled={!serverChatId}
-              title={serverChatId ? "Attach a file" : "Send your first message to enable attachments"}
-              className="p-3 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Attach a file"
+              className="p-3 hover:bg-gray-100 rounded-lg transition-colors"
             >
               <Paperclip size={20} className="text-gray-600" />
             </button>

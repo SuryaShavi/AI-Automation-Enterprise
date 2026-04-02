@@ -43,6 +43,7 @@ export interface RegisterRequest {
   email: string;
   firstName: string;
   lastName: string;
+  role: 'USER' | 'ADMIN';
   password: string;
 }
 export interface LoginResponse {

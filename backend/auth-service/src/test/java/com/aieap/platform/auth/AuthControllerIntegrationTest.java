@@ -77,11 +77,36 @@ class AuthControllerIntegrationTest {
                       \"email\": \"new.user@example.com\",
                       \"firstName\": \"New\",
                       \"lastName\": \"User\",
+                      \"role\": \"USER\",
                       \"password\": \"Password12\"
                     }
                     """))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.data.user.id").isNotEmpty())
             .andExpect(jsonPath("$.data.user.userCode").value(2561000));
+    }
+
+    @Test
+    void registerAdminUsesAdminUserCodeSequence() throws Exception {
+        when(jdbcTemplate.queryForObject(contains("COUNT(*) FROM aieap.users WHERE email = ?"), eq(Integer.class), eq("admin.user@example.com")))
+            .thenReturn(0);
+        when(jdbcTemplate.queryForObject(contains("SELECT aieap.next_user_code(?)"), eq(Long.class), eq(true)))
+            .thenReturn(2560000L);
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        mockMvc.perform(post("/auth/register")
+                .contentType(APPLICATION_JSON)
+                .content("""
+                    {
+                      \"email\": \"admin.user@example.com\",
+                      \"firstName\": \"Admin\",
+                      \"lastName\": \"User\",
+                      \"role\": \"ADMIN\",
+                      \"password\": \"Password12\"
+                    }
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.data.user.id").isNotEmpty())
+            .andExpect(jsonPath("$.data.user.userCode").value(2560000));
     }
 }

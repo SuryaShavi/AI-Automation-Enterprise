@@ -8,6 +8,7 @@ import { formatCompactDate, formatDateTime } from "../lib/format";
 interface IntegrationDraft {
   authType: string;
   webhookSecret: string;
+  slackWebhookUrl: string;
   testEventType: string;
 }
 
@@ -65,6 +66,7 @@ export default function Integrations() {
             nextDrafts[key] = nextDrafts[key] ?? {
               authType: integration.authType,
               webhookSecret: "",
+              slackWebhookUrl: "",
               testEventType: `${integration.provider.toLowerCase().replace(/\s+/g, ".")}.test`,
             };
             nextDrafts[key] = { ...nextDrafts[key], authType: integration.authType };
@@ -100,6 +102,7 @@ export default function Integrations() {
       [key]: {
         authType: previous[key]?.authType ?? "OAuth2",
         webhookSecret: previous[key]?.webhookSecret ?? "",
+          slackWebhookUrl: previous[key]?.slackWebhookUrl ?? "",
         testEventType: previous[key]?.testEventType ?? `${provider.toLowerCase().replace(/\s+/g, ".")}.test`,
         ...patch,
       },
@@ -108,7 +111,7 @@ export default function Integrations() {
 
   async function toggleConnection(provider: string, currentlyConnected: boolean) {
     const key = normalizeProviderKey(provider);
-    const draft = drafts[key] ?? { authType: "OAuth2", webhookSecret: "", testEventType: `${provider.toLowerCase().replace(/\s+/g, ".")}.test` };
+    const draft = drafts[key] ?? { authType: "OAuth2", webhookSecret: "", slackWebhookUrl: "", testEventType: `${provider.toLowerCase().replace(/\s+/g, ".")}.test` };
     const snapshot = integrations;
     setPendingProvider(provider);
     setIntegrations((previous) => previous.map((integration) => (
@@ -119,7 +122,16 @@ export default function Integrations() {
 
     try {
       const endpoint = currentlyConnected ? endpoints.integrations.disconnect(provider) : endpoints.integrations.connect(provider);
-      const envelope = await apiClient.request<IntegrationItem>(endpoint, { method: "POST", body: currentlyConnected ? {} : { authType: draft.authType, webhookSecret: draft.webhookSecret.trim() || undefined } });
+      const envelope = await apiClient.request<IntegrationItem>(endpoint, {
+        method: "POST",
+        body: currentlyConnected
+          ? {}
+          : {
+              authType: draft.authType,
+              webhookSecret: draft.webhookSecret.trim() || undefined,
+              webhookUrl: draft.slackWebhookUrl.trim() || undefined,
+            },
+      });
       setIntegrations((previous) => previous.map((integration) => (integration.provider === provider ? envelope.data : integration)));
       setError(null);
     } catch (toggleError) {
@@ -132,7 +144,7 @@ export default function Integrations() {
 
   async function sendTestWebhook(provider: string) {
     const key = normalizeProviderKey(provider);
-    const draft = drafts[key] ?? { authType: "OAuth2", webhookSecret: "", testEventType: `${provider.toLowerCase().replace(/\s+/g, ".")}.test` };
+    const draft = drafts[key] ?? { authType: "OAuth2", webhookSecret: "", slackWebhookUrl: "", testEventType: `${provider.toLowerCase().replace(/\s+/g, ".")}.test` };
     const payload = {
       provider,
       eventType: draft.testEventType.trim() || `${provider.toLowerCase().replace(/\s+/g, ".")}.test`,
@@ -213,7 +225,7 @@ export default function Integrations() {
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
         {integrations.map((integration) => {
           const key = normalizeProviderKey(integration.provider);
-          const draft = drafts[key] ?? { authType: integration.authType, webhookSecret: "", testEventType: `${integration.provider.toLowerCase().replace(/\s+/g, ".")}.test` };
+          const draft = drafts[key] ?? { authType: integration.authType, webhookSecret: "", slackWebhookUrl: "", testEventType: `${integration.provider.toLowerCase().replace(/\s+/g, ".")}.test` };
           const receipt = receipts[key];
           const iconData = iconByProvider(integration.provider);
           const Icon = iconData.icon;
@@ -243,6 +255,13 @@ export default function Integrations() {
                   <span className="mb-1 block font-medium">Webhook secret</span>
                   <input value={draft.webhookSecret} onChange={(event) => updateDraft(integration.provider, { webhookSecret: event.target.value })} placeholder={integration.webhookSecretConfigured ? "Configured server-side; enter again to rotate" : "Optional HMAC secret"} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
                 </label>
+
+                {integration.provider.toLowerCase().includes("slack") && (
+                  <label className="block text-sm text-gray-700">
+                    <span className="mb-1 block font-medium">Slack webhook URL</span>
+                    <input value={draft.slackWebhookUrl} onChange={(event) => updateDraft(integration.provider, { slackWebhookUrl: event.target.value })} placeholder="https://hooks.slack.com/services/..." className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                  </label>
+                )}
 
                 <label className="block text-sm text-gray-700">
                   <span className="mb-1 block font-medium">Test event type</span>

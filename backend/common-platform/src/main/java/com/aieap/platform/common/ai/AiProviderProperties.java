@@ -8,7 +8,6 @@ import org.springframework.util.StringUtils;
 
 @ConfigurationProperties(prefix = "ai.provider")
 public class AiProviderProperties {
-    private String baseUrl = "https://api.openai.com/v1";
     private String apiKey;
     private String apiKeyRotation;
     private String model = "gpt-4o-mini";
@@ -25,14 +24,6 @@ public class AiProviderProperties {
     private int plannerMaxOutputTokens = 180;
     private int maxHistoryMessages = 8;
     private int maxContextChunks = 6;
-
-    public String getBaseUrl() {
-        return baseUrl;
-    }
-
-    public void setBaseUrl(String baseUrl) {
-        this.baseUrl = baseUrl;
-    }
 
     public String getApiKey() {
         return apiKey;
@@ -55,9 +46,7 @@ public class AiProviderProperties {
         addCandidates(uniqueKeys, apiKey);
         addCandidates(uniqueKeys, apiKeyRotation);
         addCandidates(uniqueKeys, System.getProperty("AI_PROVIDER_API_KEY"));
-        addCandidates(uniqueKeys, System.getProperty("OPENAI_API_KEY"));
         addCandidates(uniqueKeys, System.getenv("AI_PROVIDER_API_KEY"));
-        addCandidates(uniqueKeys, System.getenv("OPENAI_API_KEY"));
         return new ArrayList<>(uniqueKeys);
     }
 

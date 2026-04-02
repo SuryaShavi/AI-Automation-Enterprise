@@ -33,6 +33,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -84,10 +85,11 @@ public class DocumentController {
     @CacheEvict(value = "documents", allEntries = true)
     public ApiEnvelope<DocumentItem> upload(
         @RequestPart("file") MultipartFile file,
-        @RequestPart(value = "ownerUserId", required = false) @NullOrValidUuid String ownerUserId,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        String ownerUserId = currentUserId(authentication);
         validateUpload(file);
         String id = UUID.randomUUID().toString();
         String fileName = InputSanitizer.fileName(file.getOriginalFilename());
@@ -99,7 +101,7 @@ public class DocumentController {
             "INSERT INTO aieap.documents (id, owner_user_id, file_name, file_type, file_size, storage_path, processing_status, summary, created_at, updated_at) " +
             "VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
             id,
-            parseUuidOrNull(ownerUserId),
+            ownerUserId,
             fileName,
             fileType,
             file.getSize(),
@@ -137,7 +139,7 @@ public class DocumentController {
             documentIndexingService.indexDocumentAsync(id, chunkIds, processed.chunks());
         }
 
-        DocumentItem document = document(id);
+        DocumentItem document = document(id, ownerUserId);
         if (kafkaEventPublisher != null) {
             String correlationId = request.getHeader("X-Correlation-ID") != null
                 ? request.getHeader("X-Correlation-ID")
@@ -162,9 +164,8 @@ public class DocumentController {
     }
 
     @GetMapping
-    @Cacheable(value = "documents", key = "'list:p=' + #page + ':s=' + #size")
-    public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
-        List<DocumentItem> items = loadDocuments();
+    public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        List<DocumentItem> items = loadDocuments(currentUserId(authentication));
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         List<DocumentItem> pageItems = new ArrayList<>(items.subList(fromIndex, toIndex));
@@ -172,16 +173,16 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}")
-    public ApiEnvelope<DocumentItem> get(@PathVariable UUID id, HttpServletRequest request) {
-        return ResponseFactory.success(request, document(id.toString()));
+    public ApiEnvelope<DocumentItem> get(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        return ResponseFactory.success(request, document(id.toString(), currentUserId(authentication)));
     }
 
     @PostMapping("/{id}/ask")
-    @Cacheable(value = "doc-answers", key = "#id + ':' + #askDocumentRequest.question().toLowerCase().strip()")
-    public ApiEnvelope<DocumentAnswer> ask(@PathVariable UUID id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, HttpServletRequest request) {
+    public ApiEnvelope<DocumentAnswer> ask(@PathVariable UUID id, @Valid @RequestBody AskDocumentRequest askDocumentRequest, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String documentId = id.toString();
+        String userId = currentUserId(authentication);
         String question = InputSanitizer.requiredText(askDocumentRequest.question());
-        document(documentId);
+        document(documentId, userId);
         RetrievalResult retrievalResult = loadRelevantChunks(documentId, question, 8);
         List<DocumentChunk> citations = retrievalResult.chunks();
         String answer = documentRagService.answerQuestion(question, citations);
@@ -204,16 +205,16 @@ public class DocumentController {
     }
 
     @GetMapping("/{id}/chunks")
-    public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String documentId = id.toString();
-        document(documentId);
+        document(documentId, currentUserId(authentication));
         return ResponseFactory.success(request, loadChunks(documentId));
     }
 
-    private DocumentItem document(String id) {
+    private DocumentItem document(String id, String userId) {
         JdbcTemplate db = requireJdbc();
         List<DocumentItem> rows = db.query(
-            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE id = ?::uuid",
+            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE id = ?::uuid AND owner_user_id = ?::uuid",
             (rs, rowNum) -> new DocumentItem(
                 rs.getString("id"),
                 rs.getString("file_name"),
@@ -223,7 +224,8 @@ public class DocumentController {
                 rs.getString("summary"),
                 readOffsetDateTime(rs, "created_at")
             ),
-            id
+            id,
+            userId
         );
         DocumentItem document = rows.isEmpty() ? null : rows.getFirst();
         if (document == null) {
@@ -231,10 +233,10 @@ public class DocumentController {
         }
         return document;
     }
-    private List<DocumentItem> loadDocuments() {
+    private List<DocumentItem> loadDocuments(String userId) {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents ORDER BY created_at DESC",
+            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE owner_user_id = ?::uuid ORDER BY created_at DESC",
             (rs, rowNum) -> new DocumentItem(
                 rs.getString("id"),
                 rs.getString("file_name"),
@@ -243,8 +245,53 @@ public class DocumentController {
                 rs.getString("processing_status"),
                 rs.getString("summary"),
                 readOffsetDateTime(rs, "created_at")
-            )
+            ),
+            userId
         );
+    }
+
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        JdbcTemplate db = requireJdbc();
+        if (userId != null && !userId.isBlank()) {
+            Integer exists = db.queryForObject(
+                "SELECT COUNT(*) FROM aieap.users WHERE id = ?::uuid AND status = 'ACTIVE'",
+                Integer.class,
+                userId
+            );
+            if (exists != null && exists > 0) {
+                return userId;
+            }
+        }
+
+        String subjectEmail = authentication.getToken().getSubject();
+        if (subjectEmail != null && !subjectEmail.isBlank()) {
+            List<String> rows = db.query(
+                "SELECT id::text FROM aieap.users WHERE LOWER(email) = LOWER(?) AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                subjectEmail
+            );
+            if (!rows.isEmpty()) {
+                return rows.getFirst();
+            }
+        }
+
+        Object userCodeClaim = authentication.getToken().getClaim("userCode");
+        if (userCodeClaim != null) {
+            String userCode = userCodeClaim.toString();
+            List<String> rows = db.query(
+                "SELECT id::text FROM aieap.users WHERE user_code = ?::bigint AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                userCode
+            );
+            if (!rows.isEmpty()) {
+                return rows.getFirst();
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
     }
 
     private List<DocumentChunk> loadChunks(String documentId) {

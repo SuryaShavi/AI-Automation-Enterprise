@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -51,13 +52,14 @@ public class ReportController {
     }
 
     @GetMapping("/dashboard/metrics")
-    public ApiEnvelope<Map<String, Object>> metrics(HttpServletRequest request) {
+    public ApiEnvelope<Map<String, Object>> metrics(JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
-        Integer totalTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks", Integer.class);
-        Integer pendingTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE status = 'PENDING'", Integer.class);
-        Integer completedTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE status = 'COMPLETED'", Integer.class);
-        Integer documentsUploaded = db.queryForObject("SELECT COUNT(*) FROM aieap.documents", Integer.class);
-        Integer aiRequestsToday = db.queryForObject("SELECT COUNT(*) FROM aieap.reports WHERE requested_at >= NOW()::date", Integer.class);
+        String userId = currentUserId(authentication);
+        Integer totalTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid", Integer.class, userId, userId);
+        Integer pendingTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid) AND status = 'PENDING'", Integer.class, userId, userId);
+        Integer completedTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.tasks WHERE (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid) AND status = 'COMPLETED'", Integer.class, userId, userId);
+        Integer documentsUploaded = db.queryForObject("SELECT COUNT(*) FROM aieap.documents WHERE owner_user_id = ?::uuid", Integer.class, userId);
+        Integer aiRequestsToday = db.queryForObject("SELECT COUNT(*) FROM aieap.reports WHERE owner_user_id = ?::uuid AND requested_at >= NOW()::date", Integer.class, userId);
         return ResponseFactory.success(request, Map.of(
             "totalTasks", totalTasks == null ? 0 : totalTasks,
             "pendingTasks", pendingTasks == null ? 0 : pendingTasks,
@@ -68,22 +70,27 @@ public class ReportController {
     }
 
     @GetMapping("/dashboard/activity")
-    public ApiEnvelope<List<Map<String, String>>> activity(HttpServletRequest request) {
+    public ApiEnvelope<List<Map<String, String>>> activity(JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         List<Map<String, String>> items = db.query(
             "SELECT type, description, occurred_at FROM (" +
-                " SELECT 'task.created' AS type, CONCAT('New task assigned: ', title) AS description, created_at AS occurred_at FROM aieap.tasks" +
+                " SELECT 'task.created' AS type, CONCAT('New task assigned: ', title) AS description, created_at AS occurred_at FROM aieap.tasks WHERE created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid" +
                 " UNION ALL " +
-                " SELECT 'document.uploaded' AS type, CONCAT(file_name, ' uploaded') AS description, created_at AS occurred_at FROM aieap.documents" +
+                " SELECT 'document.uploaded' AS type, CONCAT(file_name, ' uploaded') AS description, created_at AS occurred_at FROM aieap.documents WHERE owner_user_id = ?::uuid" +
                 " UNION ALL " +
                 " SELECT 'report.generated' AS type, CONCAT(title, ' is ready') AS description, COALESCE(generated_at, requested_at) AS occurred_at" +
-                " FROM aieap.reports WHERE status = 'GENERATED' OR generated_at IS NOT NULL" +
+                " FROM aieap.reports WHERE owner_user_id = ?::uuid AND (status = 'GENERATED' OR generated_at IS NOT NULL)" +
             ") activity ORDER BY occurred_at DESC LIMIT 10",
             (rs, rowNum) -> Map.of(
                 "type", rs.getString("type"),
                 "description", rs.getString("description"),
                 "occurredAt", rs.getObject("occurred_at", OffsetDateTime.class).toString()
-            )
+            ),
+            userId,
+            userId,
+            userId,
+            userId
         );
         return ResponseFactory.success(request, items);
     }
@@ -99,8 +106,8 @@ public class ReportController {
     }
 
     @GetMapping("/reports")
-    public ApiEnvelope<PageEnvelope<ReportItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
-        List<ReportItem> items = loadReports();
+    public ApiEnvelope<PageEnvelope<ReportItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        List<ReportItem> items = loadReports(currentUserId(authentication));
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "requestedAt,DESC"));
@@ -112,10 +119,11 @@ public class ReportController {
     public ApiEnvelope<ReportItem> generate(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody GenerateReportRequest generateReportRequest,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
-        String targetUserId = resolveFirstActiveUserId();
+        String targetUserId = currentUserId(authentication);
         String id = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
@@ -128,7 +136,7 @@ public class ReportController {
             generateReportRequest.title().trim(),
             payload
         );
-        ReportItem report = report(id);
+        ReportItem report = report(id, targetUserId);
         if (kafkaEventPublisher != null) {
             String correlationId = request.getHeader("X-Correlation-ID") != null
                 ? request.getHeader("X-Correlation-ID")
@@ -153,8 +161,8 @@ public class ReportController {
     }
 
     @GetMapping("/reports/{id}")
-    public ApiEnvelope<ReportItem> get(@PathVariable UUID id, HttpServletRequest request) {
-        ReportItem report = report(id.toString());
+    public ApiEnvelope<ReportItem> get(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        ReportItem report = report(id.toString(), currentUserId(authentication));
         if (report == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Report not found");
         }
@@ -170,25 +178,10 @@ public class ReportController {
         ));
     }
 
-    private List<ReportItem> loadReports() {
+    private List<ReportItem> loadReports(String userId) {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports ORDER BY requested_at DESC",
-            (rs, rowNum) -> new ReportItem(
-                rs.getString("id"),
-                rs.getString("report_type"),
-                rs.getString("title"),
-                rs.getString("status"),
-                rs.getObject("requested_at", OffsetDateTime.class),
-                parsePayload(rs.getString("request_payload"))
-            )
-        );
-    }
-
-    private ReportItem report(String id) {
-        JdbcTemplate db = requireJdbc();
-        List<ReportItem> rows = db.query(
-            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports WHERE id = ?::uuid",
+            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports WHERE owner_user_id = ?::uuid ORDER BY requested_at DESC",
             (rs, rowNum) -> new ReportItem(
                 rs.getString("id"),
                 rs.getString("report_type"),
@@ -197,7 +190,24 @@ public class ReportController {
                 rs.getObject("requested_at", OffsetDateTime.class),
                 parsePayload(rs.getString("request_payload"))
             ),
-            id
+            userId
+        );
+    }
+
+    private ReportItem report(String id, String userId) {
+        JdbcTemplate db = requireJdbc();
+        List<ReportItem> rows = db.query(
+            "SELECT id::text AS id, report_type, title, status, requested_at, request_payload::text AS request_payload FROM aieap.reports WHERE id = ?::uuid AND owner_user_id = ?::uuid",
+            (rs, rowNum) -> new ReportItem(
+                rs.getString("id"),
+                rs.getString("report_type"),
+                rs.getString("title"),
+                rs.getString("status"),
+                rs.getObject("requested_at", OffsetDateTime.class),
+                parsePayload(rs.getString("request_payload"))
+            ),
+            id,
+            userId
         );
         return rows.isEmpty() ? null : rows.getFirst();
     }
@@ -229,13 +239,15 @@ public class ReportController {
         return jdbcTemplate;
     }
 
-    private String resolveFirstActiveUserId() {
-        JdbcTemplate db = requireJdbc();
-        List<String> rows = db.query(
-            "SELECT id::text FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
-            (rs, rowNum) -> rs.getString(1)
-        );
-        return rows.isEmpty() ? null : rows.getFirst();
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        if (userId == null || userId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        return userId;
     }
 
     public record ReportItem(String id, String reportType, String title, String status, OffsetDateTime requestedAt, Map<String, Object> payload) {

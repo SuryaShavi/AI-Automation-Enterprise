@@ -32,6 +32,7 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -66,16 +67,17 @@ public class TaskController {
     }
 
     @GetMapping
-    @Cacheable(value = "tasks", key = "'list:p=' + #page + ':s=' + #size + ':st=' + #status + ':pr=' + #priority + ':so=' + #sort")
     public ApiEnvelope<PageEnvelope<TaskItem>> listTasks(
         @RequestParam(defaultValue = "0") @Min(0) int page,
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
         @RequestParam(required = false) @AllowedValues(values = {"PENDING", "IN_PROGRESS", "COMPLETED"}) String status,
         @RequestParam(required = false) @AllowedValues(values = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}) String priority,
         @RequestParam(defaultValue = "dueAt") @AllowedValues(values = {"dueAt", "priority", "createdAt"}, allowNull = false) String sort,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
-        List<TaskItem> filtered = loadTasks().stream()
+        String userId = currentUserId(authentication);
+        List<TaskItem> filtered = loadTasks(userId).stream()
             .filter(task -> status == null || task.status().equalsIgnoreCase(status))
             .filter(task -> priority == null || task.priority().equalsIgnoreCase(priority))
             .sorted(resolveComparator(sort))
@@ -95,9 +97,11 @@ public class TaskController {
     public ApiEnvelope<TaskItem> createTask(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody CreateTaskRequest createTaskRequest,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         String id = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
@@ -109,19 +113,20 @@ public class TaskController {
         String metadataJson = toJson(Map.of("source", source));
 
         db.update(
-            "INSERT INTO aieap.tasks (id, source_email_id, title, description, assignee_user_id, priority, status, due_at, metadata_json, created_at, updated_at) " +
-            "VALUES (?::uuid, ?::uuid, ?, ?, ?::uuid, ?, 'PENDING', ?, ?::jsonb, NOW(), NOW()) " +
+            "INSERT INTO aieap.tasks (id, source_email_id, title, description, assignee_user_id, created_by_user_id, priority, status, due_at, metadata_json, created_at, updated_at) " +
+            "VALUES (?::uuid, ?::uuid, ?, ?, ?::uuid, ?::uuid, ?, 'PENDING', ?, ?::jsonb, NOW(), NOW()) " +
             "ON CONFLICT (id) DO NOTHING",
             id,
             parseUuidOrNull(source),
             InputSanitizer.requiredText(createTaskRequest.title()),
             InputSanitizer.nullableText(createTaskRequest.description()),
-            parseUuidOrNull(createTaskRequest.assigneeUserId()),
+            parseUuidOrNull(createTaskRequest.assigneeUserId()) == null ? userId : parseUuidOrNull(createTaskRequest.assigneeUserId()),
+            userId,
             priority,
             dueAt,
             metadataJson
         );
-        TaskItem task = task(id);
+        TaskItem task = task(id, userId);
         publishTaskCreatedEvent(task, request.getHeader("X-Correlation-ID"));
         return ResponseFactory.success(request, task);
     }
@@ -132,10 +137,12 @@ public class TaskController {
     public ApiEnvelope<TaskItem> updateTask(
         @PathVariable UUID id,
         @Valid @RequestBody UpdateTaskRequest updateTaskRequest,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         String taskId = id.toString();
-        TaskItem existing = task(taskId);
+        String userId = currentUserId(authentication);
+        TaskItem existing = task(taskId, userId);
         String updatedPriority = updateTaskRequest.priority() == null
             ? existing.priority()
             : updateTaskRequest.priority().toUpperCase();
@@ -171,17 +178,17 @@ public class TaskController {
     @DeleteMapping("/{id}")
     @Transactional
     @CacheEvict(value = "tasks", allEntries = true)
-    public ApiEnvelope<Map<String, String>> deleteTask(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<Map<String, String>> deleteTask(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String taskId = id.toString();
+        String userId = currentUserId(authentication);
         JdbcTemplate db = requireJdbc();
-        db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid", taskId);
+        db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)", taskId, userId, userId);
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", taskId));
     }
 
     @GetMapping("/board")
-    @Cacheable(value = "tasks", key = "'board'")
-    public ApiEnvelope<TaskBoardResponse> board(HttpServletRequest request) {
-        List<TaskItem> items = loadTasks();
+    public ApiEnvelope<TaskBoardResponse> board(JwtAuthenticationToken authentication, HttpServletRequest request) {
+        List<TaskItem> items = loadTasks(currentUserId(authentication));
         List<BoardColumn> columns = List.of(
             new BoardColumn("PENDING", new java.util.ArrayList<>(items.stream().filter(task -> "PENDING".equals(task.status())).toList())),
             new BoardColumn("IN_PROGRESS", new java.util.ArrayList<>(items.stream().filter(task -> "IN_PROGRESS".equals(task.status())).toList())),
@@ -190,11 +197,11 @@ public class TaskController {
         return ResponseFactory.success(request, new TaskBoardResponse(columns));
     }
 
-    private TaskItem task(String id) {
+    private TaskItem task(String id, String userId) {
         JdbcTemplate db = requireJdbc();
         List<TaskItem> rows = db.query(
             "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
-            "FROM aieap.tasks WHERE id = ?::uuid",
+            "FROM aieap.tasks WHERE id = ?::uuid AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)",
             (rs, rowNum) -> mapTask(
                 rs.getString("id"),
                 rs.getString("title"),
@@ -206,7 +213,9 @@ public class TaskController {
                 readOffsetDateTime(rs, "updated_at"),
                 rs.getString("metadata_json")
             ),
-            id
+            id,
+            userId,
+            userId
         );
         TaskItem task = rows.isEmpty() ? null : rows.getFirst();
         if (task == null) {
@@ -215,10 +224,11 @@ public class TaskController {
         return task;
     }
 
-    private List<TaskItem> loadTasks() {
+    private List<TaskItem> loadTasks(String userId) {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json FROM aieap.tasks",
+            "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
+                "FROM aieap.tasks WHERE created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid",
             (rs, rowNum) -> mapTask(
                 rs.getString("id"),
                 rs.getString("title"),
@@ -229,8 +239,21 @@ public class TaskController {
                 readOffsetDateTime(rs, "due_at"),
                 readOffsetDateTime(rs, "updated_at"),
                 rs.getString("metadata_json")
-            )
+            ),
+            userId,
+            userId
         );
+    }
+
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        if (userId == null || userId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        return userId;
     }
 
     private TaskItem mapTask(

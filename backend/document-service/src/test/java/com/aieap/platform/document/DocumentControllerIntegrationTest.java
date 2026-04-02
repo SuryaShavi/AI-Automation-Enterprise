@@ -61,7 +61,7 @@ class DocumentControllerIntegrationTest {
     @Test
     void askRejectsBlankQuestion() throws Exception {
         mockMvc.perform(post("/documents/123e4567-e89b-12d3-a456-426614174000/ask")
-                .with(jwt())
+                .with(jwt().jwt(jwt -> jwt.claim("userId", "11111111-1111-1111-1111-111111111111")))
                 .contentType(APPLICATION_JSON)
                 .content("""
                     {

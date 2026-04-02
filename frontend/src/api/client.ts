@@ -76,6 +76,9 @@ export class ApiClient {
   private async parseEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
     const envelope = (await response.json()) as ApiEnvelope<T>;
     if (!response.ok || envelope.error) {
+      if (envelope.error?.code === 'DATABASE_UNAVAILABLE' && envelope.error?.details?.includes('DataIntegrityViolationException')) {
+        throw new Error('Your session is out of sync with current data. Please sign out and sign in again.');
+      }
       throw new Error(envelope.error?.message ?? `Request failed with ${response.status}`);
     }
     return envelope;

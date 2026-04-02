@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { apiClient } from "../../api/client";
 import { endpoints } from "../../api/endpoints";
 import type { NotificationItem } from "../../api/contracts";
+import { API_BASE_URL, AUTH_STORAGE_KEYS } from "../../config/api";
 import { formatRelativeTime } from "../lib/format";
 
 type NotificationFilter = "All" | "Unread" | "Tasks" | "AI Alerts";
@@ -17,6 +18,14 @@ export default function Notifications() {
 
   useEffect(() => {
     let active = true;
+    let stream: EventSource | null = null;
+
+    function upsertNotification(incoming: NotificationItem) {
+      setNotifications((previous) => {
+        const withoutExisting = previous.filter((item) => item.id !== incoming.id);
+        return [incoming, ...withoutExisting].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      });
+    }
 
     async function loadNotifications() {
       try {
@@ -38,12 +47,38 @@ export default function Notifications() {
 
     void loadNotifications();
 
+    const accessToken = localStorage.getItem(AUTH_STORAGE_KEYS.accessToken);
+    if (accessToken) {
+      const streamUrl = `${API_BASE_URL}${endpoints.notifications.stream}?access_token=${encodeURIComponent(accessToken)}`;
+      stream = new EventSource(streamUrl);
+      stream.addEventListener("notification", (event) => {
+        if (!active) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(event.data) as NotificationItem;
+          upsertNotification(payload);
+          setError(null);
+        } catch {
+          // Ignore malformed stream payloads and rely on periodic sync.
+        }
+      });
+      stream.onerror = () => {
+        if (active) {
+          setError((previous) => previous ?? "Live notification stream disconnected. Falling back to periodic refresh.");
+        }
+      };
+    }
+
     const pollId = window.setInterval(() => {
       void loadNotifications();
     }, 30_000);
 
     return () => {
       active = false;
+      if (stream) {
+        stream.close();
+      }
       window.clearInterval(pollId);
     };
   }, []);

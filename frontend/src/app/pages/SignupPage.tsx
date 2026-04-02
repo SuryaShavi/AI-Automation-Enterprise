@@ -12,6 +12,7 @@ export default function SignupPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"USER" | "ADMIN">("USER");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -55,6 +56,7 @@ export default function SignupPage() {
         email: normalizedEmail,
         firstName: normalizedFirst,
         lastName: normalizedLast,
+        role,
         password,
       });
 
@@ -149,6 +151,19 @@ export default function SignupPage() {
                   required
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Account Role</label>
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value as "USER" | "ADMIN")}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                required
+              >
+                <option value="USER">User</option>
+                <option value="ADMIN">Admin</option>
+              </select>
             </div>
 
             <div>

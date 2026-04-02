@@ -97,7 +97,7 @@ public class AiChatService {
         if (!llmClient.isConfigured()) {
             guardrails.add("provider:not-configured");
             return buildResult(
-                "AI provider key is missing. Add `AI_PROVIDER_API_KEY` or `OPENAI_API_KEY` to `backend/.env`, then restart the backend service.",
+                "AI provider key is missing. Add `AI_PROVIDER_API_KEY` to `backend/.env`, then restart the backend service.",
                 guardrails,
                 List.of(),
                 GroundingContext.empty(),
@@ -149,7 +149,7 @@ public class AiChatService {
             completion = completion.trim() + "\n\nSources: " + String.join(", ", groundingContext.citations().stream().limit(3).toList());
         }
 
-        guardrails.add("provider:openai-compatible");
+        guardrails.add("provider:openai");
         guardrails.add("orchestration:tool-planner");
         return buildResult(completion, guardrails, plannedTools, groundingContext, false);
     }

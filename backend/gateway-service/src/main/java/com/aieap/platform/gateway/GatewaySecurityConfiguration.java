@@ -34,7 +34,8 @@ public class GatewaySecurityConfiguration {
                     "/actuator/health",
                     "/auth/login",
                     "/auth/refresh",
-                    "/auth/register"
+                    "/auth/register",
+                    "/notifications/stream"
                 ).permitAll()
                 .anyExchange().authenticated()
             )

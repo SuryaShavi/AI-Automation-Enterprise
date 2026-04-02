@@ -18,6 +18,7 @@
   ai: {
     chat: '/ai/chat',
     chats: '/ai/chats',
+    createChat: '/ai/chats',
     messages: (chatId: string) => `/ai/chats/${chatId}/messages`,
     attachments: (chatId: string) => `/ai/chats/${chatId}/attachments`,
   },
@@ -51,6 +52,7 @@
   notifications: {
     list: '/notifications',
     recent: '/notifications/recent',
+    stream: '/notifications/stream',
     read: (id: string) => `/notifications/${id}/read`,
     readAll: '/notifications/read-all',
     remove: (id: string) => `/notifications/${id}`,

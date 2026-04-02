@@ -1,6 +1,7 @@
 package com.aieap.platform.email;
 
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -51,10 +52,10 @@ class EmailControllerIntegrationTest {
 
     @Test
     void statsReturnsAggregatedCounts() throws Exception {
-        when(jdbcTemplate.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Integer.class)))
+        when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), anyString()))
             .thenReturn(12, 3, 1);
 
-        mockMvc.perform(get("/emails/stats").with(jwt()))
+        mockMvc.perform(get("/emails/stats").with(jwt().jwt(jwt -> jwt.claim("userId", "11111111-1111-1111-1111-111111111111"))))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.emailsProcessed").value(12))
             .andExpect(jsonPath("$.data.tasksDetected").value(1))

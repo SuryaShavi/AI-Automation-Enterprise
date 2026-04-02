@@ -11,20 +11,27 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import com.aieap.platform.notification.ws.NotificationStreamService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 @Validated
@@ -32,64 +39,31 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/notifications")
 @PreAuthorize("isAuthenticated()")
 public class NotificationController {
+    private final NotificationStreamService notificationStreamService;
+    private final JwtDecoder jwtDecoder;
+
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
 
+    public NotificationController(NotificationStreamService notificationStreamService, JwtDecoder jwtDecoder) {
+        this.notificationStreamService = notificationStreamService;
+        this.jwtDecoder = jwtDecoder;
+    }
+
     @GetMapping
-    public ApiEnvelope<PageEnvelope<NotificationItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, HttpServletRequest request) {
-        List<NotificationItem> items = loadNotifications();
+    public ApiEnvelope<PageEnvelope<NotificationItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        List<NotificationItem> items = loadNotifications(currentUserId(authentication));
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "createdAt,DESC"));
     }
 
     @GetMapping("/recent")
-    public ApiEnvelope<List<NotificationItem>> recent(HttpServletRequest request) {
+    public ApiEnvelope<List<NotificationItem>> recent(JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         List<NotificationItem> items = db.query(
-            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications ORDER BY created_at DESC LIMIT 5",
-            (rs, rowNum) -> new NotificationItem(
-                rs.getString("id"),
-                rs.getString("notification_type"),
-                rs.getString("title"),
-                rs.getString("message"),
-                rs.getObject("read_at", OffsetDateTime.class) != null,
-                rs.getObject("created_at", OffsetDateTime.class)
-            )
-        );
-        return ResponseFactory.success(request, items);
-    }
-
-    @PatchMapping("/{id}/read")
-    @Transactional
-    public ApiEnvelope<NotificationItem> markRead(@PathVariable UUID id, HttpServletRequest request) {
-        String notificationId = id.toString();
-        JdbcTemplate db = requireJdbc();
-        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE id = ?::uuid", notificationId);
-        return ResponseFactory.success(request, notification(notificationId));
-    }
-
-    @PatchMapping("/read-all")
-    @Transactional
-    public ApiEnvelope<Map<String, String>> markAllRead(HttpServletRequest request) {
-        JdbcTemplate db = requireJdbc();
-        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE read_at IS NULL");
-        return ResponseFactory.success(request, Map.of("status", "all-read"));
-    }
-
-    @DeleteMapping("/{id}")
-    @Transactional
-    public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, HttpServletRequest request) {
-        String notificationId = id.toString();
-        JdbcTemplate db = requireJdbc();
-        db.update("DELETE FROM aieap.notifications WHERE id = ?::uuid", notificationId);
-        return ResponseFactory.success(request, Map.of("status", "deleted", "id", notificationId));
-    }
-
-    private NotificationItem notification(String id) {
-        JdbcTemplate db = requireJdbc();
-        List<NotificationItem> rows = db.query(
-            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications WHERE id = ?::uuid",
+            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications WHERE user_id = ?::uuid ORDER BY created_at DESC LIMIT 5",
             (rs, rowNum) -> new NotificationItem(
                 rs.getString("id"),
                 rs.getString("notification_type"),
@@ -98,7 +72,72 @@ public class NotificationController {
                 rs.getObject("read_at", OffsetDateTime.class) != null,
                 rs.getObject("created_at", OffsetDateTime.class)
             ),
-            id
+            userId
+        );
+        return ResponseFactory.success(request, items);
+    }
+
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PreAuthorize("permitAll()")
+    public SseEmitter stream(@RequestParam(name = "access_token") String accessToken) {
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Access token is required");
+        }
+
+        try {
+            Jwt jwt = jwtDecoder.decode(accessToken);
+            String userId = jwt.getClaimAsString("userId");
+            if (userId == null || userId.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+            }
+            return notificationStreamService.register(userId);
+        } catch (JwtException ex) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid token", ex);
+        }
+    }
+
+    @PatchMapping("/{id}/read")
+    @Transactional
+    public ApiEnvelope<NotificationItem> markRead(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String notificationId = id.toString();
+        String userId = currentUserId(authentication);
+        JdbcTemplate db = requireJdbc();
+        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE id = ?::uuid AND user_id = ?::uuid", notificationId, userId);
+        return ResponseFactory.success(request, notification(notificationId, userId));
+    }
+
+    @PatchMapping("/read-all")
+    @Transactional
+    public ApiEnvelope<Map<String, String>> markAllRead(JwtAuthenticationToken authentication, HttpServletRequest request) {
+        JdbcTemplate db = requireJdbc();
+        db.update("UPDATE aieap.notifications SET read_at = NOW(), status = 'READ' WHERE read_at IS NULL AND user_id = ?::uuid", currentUserId(authentication));
+        return ResponseFactory.success(request, Map.of("status", "all-read"));
+    }
+
+    @DeleteMapping("/{id}")
+    @Transactional
+    public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String notificationId = id.toString();
+        String userId = currentUserId(authentication);
+        JdbcTemplate db = requireJdbc();
+        db.update("DELETE FROM aieap.notifications WHERE id = ?::uuid AND user_id = ?::uuid", notificationId, userId);
+        return ResponseFactory.success(request, Map.of("status", "deleted", "id", notificationId));
+    }
+
+    private NotificationItem notification(String id, String userId) {
+        JdbcTemplate db = requireJdbc();
+        List<NotificationItem> rows = db.query(
+            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications WHERE id = ?::uuid AND user_id = ?::uuid",
+            (rs, rowNum) -> new NotificationItem(
+                rs.getString("id"),
+                rs.getString("notification_type"),
+                rs.getString("title"),
+                rs.getString("message"),
+                rs.getObject("read_at", OffsetDateTime.class) != null,
+                rs.getObject("created_at", OffsetDateTime.class)
+            ),
+            id,
+            userId
         );
         NotificationItem notification = rows.isEmpty() ? null : rows.getFirst();
         if (notification == null) {
@@ -107,10 +146,10 @@ public class NotificationController {
         return notification;
     }
 
-    private List<NotificationItem> loadNotifications() {
+    private List<NotificationItem> loadNotifications(String userId) {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications ORDER BY created_at DESC",
+            "SELECT id::text AS id, notification_type, title, message, read_at, created_at FROM aieap.notifications WHERE user_id = ?::uuid ORDER BY created_at DESC",
             (rs, rowNum) -> new NotificationItem(
                 rs.getString("id"),
                 rs.getString("notification_type"),
@@ -118,7 +157,8 @@ public class NotificationController {
                 rs.getString("message"),
                 rs.getObject("read_at", OffsetDateTime.class) != null,
                 rs.getObject("created_at", OffsetDateTime.class)
-            )
+            ),
+            userId
         );
     }
 
@@ -127,6 +167,17 @@ public class NotificationController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
         }
         return jdbcTemplate;
+    }
+
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        if (userId == null || userId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        return userId;
     }
 
     public record NotificationItem(String id, String type, String title, String message, boolean read, OffsetDateTime createdAt) {

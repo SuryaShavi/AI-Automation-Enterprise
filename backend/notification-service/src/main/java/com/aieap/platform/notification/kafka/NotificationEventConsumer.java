@@ -1,10 +1,14 @@
 package com.aieap.platform.notification.kafka;
 
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import com.aieap.platform.notification.ExternalNotificationDeliveryService;
+import com.aieap.platform.notification.NotificationController;
+import com.aieap.platform.notification.ws.NotificationStreamService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +30,12 @@ public class NotificationEventConsumer {
 
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private NotificationStreamService notificationStreamService;
+
+    @Autowired
+    private ExternalNotificationDeliveryService externalNotificationDeliveryService;
 
     // -------------------------------------------------------------------------
     // task.created
@@ -188,17 +198,32 @@ public class NotificationEventConsumer {
             return;
         }
 
+        String notificationId = UUID.randomUUID().toString();
+        OffsetDateTime createdAt = OffsetDateTime.now();
         jdbcTemplate.update(
             "INSERT INTO aieap.notifications " +
             "(id, user_id, channel, notification_type, title, message, status, metadata_json, created_at) " +
-            "VALUES (?::uuid, ?::uuid, 'IN_APP', ?, ?, ?, 'UNREAD', ?::jsonb, NOW())",
-            UUID.randomUUID().toString(),
+            "VALUES (?::uuid, ?::uuid, 'IN_APP', ?, ?, ?, 'UNREAD', ?::jsonb, ?)",
+            notificationId,
             userId,
             type,
             title,
             message,
-            "{\"correlationId\":\"" + correlationId + "\"}"
+            "{\"correlationId\":\"" + correlationId + "\"}",
+            createdAt
         );
+
+        NotificationController.NotificationItem item = new NotificationController.NotificationItem(
+            notificationId,
+            type,
+            title,
+            message,
+            false,
+            createdAt
+        );
+
+        notificationStreamService.publish(userId, item);
+        externalNotificationDeliveryService.deliver(userId, type, title, message, correlationId);
 
         log.info("[KAFKA] Notification created type={} correlationId={}", type, correlationId);
     }

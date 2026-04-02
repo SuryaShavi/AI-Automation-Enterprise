@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.validation.annotation.Validated;
@@ -41,6 +43,9 @@ public class AiController {
     private final ChatPersistenceService chatPersistenceService;
     private final AiChatService aiChatService;
     private final ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private JdbcTemplate jdbcTemplate;
 
     public AiController(
         ChatPersistenceService chatPersistenceService,
@@ -123,6 +128,20 @@ public class AiController {
         return ResponseFactory.success(request, summaries);
     }
 
+    @PostMapping("/chats")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiEnvelope<ChatSummary> createChat(
+        JwtAuthenticationToken authentication,
+        HttpServletRequest request
+    ) {
+        UUID userId = extractUserId(authentication);
+        ChatSession session = chatPersistenceService.createChatSession(userId, "New Chat");
+        return ResponseFactory.success(
+            request,
+            new ChatSummary(session.getId().toString(), session.getTitle(), session.getUpdatedAt(), 0)
+        );
+    }
+
     @GetMapping("/chats/{id}/messages")
     public ApiEnvelope<List<ChatMessage>> messages(
         @PathVariable UUID id,
@@ -169,14 +188,57 @@ public class AiController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required");
         }
         Object userIdClaim = authentication.getToken().getClaim("userId");
-        if (userIdClaim == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User ID not found in token");
+        JdbcTemplate db = requireJdbc();
+
+        if (userIdClaim != null) {
+            try {
+                UUID userId = UUID.fromString(userIdClaim.toString());
+                Integer exists = db.queryForObject(
+                    "SELECT COUNT(*) FROM aieap.users WHERE id = ?::uuid AND status = 'ACTIVE'",
+                    Integer.class,
+                    userId.toString()
+                );
+                if (exists != null && exists > 0) {
+                    return userId;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Fall back to subject email resolution when claim is malformed.
+            }
         }
-        try {
-            return UUID.fromString(userIdClaim.toString());
-        } catch (IllegalArgumentException ex) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid user ID in token", ex);
+
+        String subjectEmail = authentication.getToken().getSubject();
+        if (subjectEmail != null && !subjectEmail.isBlank()) {
+            List<String> rows = db.query(
+                "SELECT id::text FROM aieap.users WHERE LOWER(email) = LOWER(?) AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                subjectEmail
+            );
+            if (!rows.isEmpty()) {
+                return UUID.fromString(rows.getFirst());
+            }
         }
+
+        Object userCodeClaim = authentication.getToken().getClaim("userCode");
+        if (userCodeClaim != null) {
+            String userCode = userCodeClaim.toString();
+            List<String> rows = db.query(
+                "SELECT id::text FROM aieap.users WHERE user_code = ?::bigint AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1),
+                userCode
+            );
+            if (!rows.isEmpty()) {
+                return UUID.fromString(rows.getFirst());
+            }
+        }
+
+        throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found. Please sign in again.");
+    }
+
+    private JdbcTemplate requireJdbc() {
+        if (jdbcTemplate == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database is not available");
+        }
+        return jdbcTemplate;
     }
 
     private UUID parseOptionalUuid(String value) {

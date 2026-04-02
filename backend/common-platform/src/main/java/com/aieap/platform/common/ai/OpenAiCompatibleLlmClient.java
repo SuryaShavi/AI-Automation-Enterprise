@@ -20,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class OpenAiCompatibleLlmClient implements LlmClient {
+    private static final String OPENAI_BASE_URL = "https://api.openai.com/v1";
     private static final ParameterizedTypeReference<Map<String, Object>> MAP_TYPE =
         new ParameterizedTypeReference<>() { };
 
@@ -31,7 +32,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         JdkClientHttpRequestFactory requestFactory = buildRequestFactory(properties);
         this.restClient = restClientBuilder
             .requestFactory(requestFactory)
-            .baseUrl(Objects.requireNonNull(properties.getBaseUrl(), "ai.provider.base-url must be configured"))
+            .baseUrl(OPENAI_BASE_URL)
             .build();
     }
 

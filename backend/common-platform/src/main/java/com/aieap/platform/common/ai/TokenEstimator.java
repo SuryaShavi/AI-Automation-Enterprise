@@ -4,7 +4,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TokenEstimator {
-    // Approximate token estimate for OpenAI-compatible BPE tokenizers.
+    // Approximate token estimate for OpenAI BPE tokenizers.
     private static final double CHARS_PER_TOKEN = 4.0;
 
     public int estimate(String text) {

@@ -138,8 +138,9 @@ public class AuthController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "An account with this email already exists");
         }
         UUID newId = UUID.randomUUID();
+        String requestedRole = normalizeRequestedRole(request.role());
         Set<String> newRoles = ConcurrentHashMap.newKeySet();
-        newRoles.add("EMPLOYEE");
+        newRoles.add(requestedRole);
         long userCode = allocateUserCode(newRoles);
         ManagedUser newUser = new ManagedUser(
             newId, userCode, email,
@@ -332,6 +333,19 @@ public class AuthController {
             Integer.class,
             email);
         return count != null && count > 0;
+    }
+
+    private String normalizeRequestedRole(String role) {
+        if (role == null || role.isBlank()) {
+            return "EMPLOYEE";
+        }
+
+        String normalized = role.trim().toUpperCase();
+        return switch (normalized) {
+            case "ADMIN" -> "ADMIN";
+            case "EMPLOYEE", "USER" -> "EMPLOYEE";
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role must be ADMIN or USER");
+        };
     }
 
     private long allocateUserCode(Set<String> roles) {
@@ -631,6 +645,7 @@ public class AuthController {
         @Email @NotBlank String email,
         @NotBlank String firstName,
         @NotBlank String lastName,
+        @NotBlank @Pattern(regexp = "^(ADMIN|EMPLOYEE|USER)$", message = "Role must be ADMIN or USER") String role,
         @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,72}$",
                  message = "Password must be 8-72 characters and include uppercase, lowercase, and a digit")
         @NotBlank String password) {}

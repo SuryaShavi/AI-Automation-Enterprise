@@ -26,6 +26,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -62,17 +63,18 @@ public class EmailController {
     public ApiEnvelope<PageEnvelope<EmailItem>> list(
         @RequestParam(defaultValue = "0") @Min(0) int page,
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
-        List<EmailItem> items = loadEmails();
+        List<EmailItem> items = loadEmails(currentUserId(authentication));
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         return ResponseFactory.success(request, new PageEnvelope<>(items.subList(fromIndex, toIndex), page, size, items.size(), "receivedAt,DESC"));
     }
 
     @GetMapping("/{id}")
-    public ApiEnvelope<EmailItem> get(@PathVariable UUID id, HttpServletRequest request) {
-        return ResponseFactory.success(request, email(id.toString()));
+    public ApiEnvelope<EmailItem> get(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        return ResponseFactory.success(request, email(id.toString(), currentUserId(authentication)));
     }
 
     @PostMapping("/ingest")
@@ -81,9 +83,11 @@ public class EmailController {
     public ApiEnvelope<EmailItem> ingest(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody IngestEmailRequest ingestEmailRequest,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         String id = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
@@ -97,9 +101,10 @@ public class EmailController {
             : ingestEmailRequest.aiSummary();
 
         db.update(
-            "INSERT INTO aieap.emails (id, external_email_id, sender_name, sender_email, subject, body_text, body_html, ai_summary, priority, processing_status, received_at) " +
-            "VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO aieap.emails (id, owner_user_id, external_email_id, sender_name, sender_email, subject, body_text, body_html, ai_summary, priority, processing_status, received_at) " +
+            "VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, 'INGESTED', ?) ON CONFLICT (id) DO NOTHING",
             id,
+            userId,
             id,
             InputSanitizer.nullableText(ingestEmailRequest.senderName()),
             ingestEmailRequest.senderEmail().trim().toLowerCase(),
@@ -110,19 +115,18 @@ public class EmailController {
             priority,
             receivedAt
         );
-        EmailItem email = email(id);
+        EmailItem email = email(id, userId);
         if (kafkaEventPublisher != null) {
             String correlationId = request.getHeader("X-Correlation-ID") != null
                 ? request.getHeader("X-Correlation-ID")
                 : UUID.randomUUID().toString();
-            String targetUserId = resolveFirstActiveUserId();
             kafkaEventPublisher.publish(
                 "new.email.ingested",
                 email.id(),
                 new EmailIngestedEvent(
                     UUID.randomUUID().toString(),
                     correlationId,
-                    targetUserId,
+                    userId,
                     email.id(),
                     email.senderEmail(),
                     email.senderName(),
@@ -138,9 +142,9 @@ public class EmailController {
 
     @PostMapping("/{id}/extract-tasks")
     @Transactional
-    public ApiEnvelope<ExtractTaskResponse> extractTasks(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<ExtractTaskResponse> extractTasks(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String emailId = id.toString();
-        EmailItem email = email(emailId);
+        EmailItem email = email(emailId, currentUserId(authentication));
         JdbcTemplate db = requireJdbc();
         List<ExtractedTask> existing = loadExtractedTasks(emailId);
         if (!existing.isEmpty()) {
@@ -203,11 +207,15 @@ public class EmailController {
     }
 
     @GetMapping("/stats")
-    public ApiEnvelope<Map<String, Object>> stats(HttpServletRequest request) {
+    public ApiEnvelope<Map<String, Object>> stats(JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
-        Integer emailsProcessed = db.queryForObject("SELECT COUNT(*) FROM aieap.emails", Integer.class);
-        Integer pending = db.queryForObject("SELECT COUNT(*) FROM aieap.emails WHERE processing_status = 'PENDING'", Integer.class);
-        Integer extractedTasks = db.queryForObject("SELECT COUNT(*) FROM aieap.extracted_tasks", Integer.class);
+        String userId = currentUserId(authentication);
+        Integer emailsProcessed = db.queryForObject("SELECT COUNT(*) FROM aieap.emails WHERE owner_user_id = ?::uuid", Integer.class, userId);
+        Integer pending = db.queryForObject("SELECT COUNT(*) FROM aieap.emails WHERE owner_user_id = ?::uuid AND processing_status = 'PENDING'", Integer.class, userId);
+        Integer extractedTasks = db.queryForObject(
+            "SELECT COUNT(*) FROM aieap.extracted_tasks et JOIN aieap.emails e ON e.id = et.email_id WHERE e.owner_user_id = ?::uuid",
+            Integer.class,
+            userId);
         return ResponseFactory.success(request, Map.of(
             "emailsProcessed", emailsProcessed == null ? 0 : emailsProcessed,
             "tasksDetected", extractedTasks == null ? 0 : extractedTasks,
@@ -215,11 +223,11 @@ public class EmailController {
         ));
     }
 
-    private EmailItem email(String id) {
+    private EmailItem email(String id, String userId) {
         JdbcTemplate db = requireJdbc();
         List<EmailItem> rows = db.query(
             "SELECT id::text AS id, sender_name, sender_email, subject, body_text, ai_summary, processing_status, priority, received_at " +
-            "FROM aieap.emails WHERE id = ?::uuid",
+            "FROM aieap.emails WHERE id = ?::uuid AND owner_user_id = ?::uuid",
             (rs, rowNum) -> new EmailItem(
                 rs.getString("id"),
                 rs.getString("sender_name"),
@@ -232,7 +240,8 @@ public class EmailController {
                 rs.getString("priority"),
                 rs.getObject("received_at", OffsetDateTime.class)
             ),
-            id
+            id,
+            userId
         );
         EmailItem email = rows.isEmpty() ? null : rows.getFirst();
         if (email == null) {
@@ -241,10 +250,11 @@ public class EmailController {
         return email;
     }
 
-    private List<EmailItem> loadEmails() {
+    private List<EmailItem> loadEmails(String userId) {
         JdbcTemplate db = requireJdbc();
         return db.query(
-            "SELECT id::text AS id, sender_name, sender_email, subject, body_text, ai_summary, processing_status, priority, received_at FROM aieap.emails ORDER BY received_at DESC",
+            "SELECT id::text AS id, sender_name, sender_email, subject, body_text, ai_summary, processing_status, priority, received_at " +
+                "FROM aieap.emails WHERE owner_user_id = ?::uuid ORDER BY received_at DESC",
             (rs, rowNum) -> new EmailItem(
                 rs.getString("id"),
                 rs.getString("sender_name"),
@@ -256,7 +266,8 @@ public class EmailController {
                 rs.getString("processing_status"),
                 rs.getString("priority"),
                 rs.getObject("received_at", OffsetDateTime.class)
-            )
+            ),
+            userId
         );
     }
 
@@ -285,13 +296,15 @@ public class EmailController {
         return jdbcTemplate;
     }
 
-    private String resolveFirstActiveUserId() {
-        JdbcTemplate db = requireJdbc();
-        List<String> rows = db.query(
-            "SELECT id::text FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
-            (rs, rowNum) -> rs.getString(1)
-        );
-        return rows.isEmpty() ? null : rows.getFirst();
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        if (userId == null || userId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        return userId;
     }
 
     public record EmailItem(

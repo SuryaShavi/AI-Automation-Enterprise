@@ -31,6 +31,8 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -47,6 +49,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @Validated
 @Tag(name = "Workflows")
+@PreAuthorize("isAuthenticated()")
 public class WorkflowController {
 
     private static final List<String> DEFAULT_PROVIDERS = List.of("Gmail", "Outlook", "Slack", "Google Drive", "Webhook");
@@ -66,8 +69,8 @@ public class WorkflowController {
     }
 
     @GetMapping("/workflows")
-    public ApiEnvelope<List<WorkflowItem>> list(HttpServletRequest request) {
-        return ResponseFactory.success(request, loadWorkflows());
+    public ApiEnvelope<List<WorkflowItem>> list(JwtAuthenticationToken authentication, HttpServletRequest request) {
+        return ResponseFactory.success(request, loadWorkflows(currentUserId(authentication)));
     }
 
     @PostMapping("/workflows")
@@ -76,9 +79,11 @@ public class WorkflowController {
     public ApiEnvelope<WorkflowItem> create(
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
         @Valid @RequestBody CreateWorkflowRequest createWorkflowRequest,
+        JwtAuthenticationToken authentication,
         HttpServletRequest request
     ) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         String workflowId = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
@@ -86,8 +91,9 @@ public class WorkflowController {
         List<WorkflowTriggerRequest> triggers = normalizeTriggerRequests(createWorkflowRequest.triggers());
 
         db.update(
-            "INSERT INTO aieap.workflows (id, name, status, trigger_type, config_json, created_at, updated_at) VALUES (?::uuid, ?, 'DRAFT', ?, '{}'::jsonb, NOW(), NOW()) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO aieap.workflows (id, owner_user_id, name, status, trigger_type, config_json, created_at, updated_at) VALUES (?::uuid, ?::uuid, ?, 'DRAFT', ?, '{}'::jsonb, NOW(), NOW()) ON CONFLICT (id) DO NOTHING",
             workflowId,
+            userId,
             InputSanitizer.requiredText(createWorkflowRequest.name()),
             deriveWorkflowTriggerType(triggers)
         );
@@ -103,15 +109,16 @@ public class WorkflowController {
         }
 
         replaceTriggers(workflowId, triggers);
-        return ResponseFactory.success(request, workflow(workflowId));
+        return ResponseFactory.success(request, workflow(workflowId, userId));
     }
 
     @PatchMapping("/workflows/{id}")
     @Transactional
-    public ApiEnvelope<WorkflowItem> update(@PathVariable UUID id, @Valid @RequestBody WorkflowUpdateRequest workflowUpdateRequest, HttpServletRequest request) {
+    public ApiEnvelope<WorkflowItem> update(@PathVariable UUID id, @Valid @RequestBody WorkflowUpdateRequest workflowUpdateRequest, JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
+        String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        WorkflowItem before = workflow(workflowId);
+        WorkflowItem before = workflow(workflowId, userId);
         String normalizedStatus = null;
 
         if (workflowUpdateRequest.status() != null) {
@@ -132,47 +139,51 @@ public class WorkflowController {
             db.update("UPDATE aieap.workflows SET trigger_type = ?, updated_at = NOW() WHERE id = ?::uuid", deriveWorkflowTriggerType(triggers), workflowId);
         }
 
-        WorkflowItem after = workflow(workflowId);
-        publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request);
+        WorkflowItem after = workflow(workflowId, userId);
+        publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request, userId);
         return ResponseFactory.success(request, after);
     }
 
     @PatchMapping("/workflows/{id}/status")
     @Transactional
-    public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable UUID id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, HttpServletRequest request) {
+    public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable UUID id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        WorkflowItem before = workflow(workflowId);
+        WorkflowItem before = workflow(workflowId, userId);
         String normalizedStatus = normalizeWorkflowStatus(workflowStatusRequest.status(), false);
-        int updated = requireJdbc().update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", normalizedStatus, workflowId);
+        int updated = requireJdbc().update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid AND owner_user_id = ?::uuid", normalizedStatus, workflowId, userId);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
         }
 
-        WorkflowItem after = workflow(workflowId);
-        publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request);
+        WorkflowItem after = workflow(workflowId, userId);
+        publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request, userId);
         return ResponseFactory.success(request, after);
     }
 
     @DeleteMapping("/workflows/{id}")
     @Transactional
-    public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        workflow(workflowId);
-        requireJdbc().update("DELETE FROM aieap.workflows WHERE id = ?::uuid", workflowId);
+        workflow(workflowId, userId);
+        requireJdbc().update("DELETE FROM aieap.workflows WHERE id = ?::uuid AND owner_user_id = ?::uuid", workflowId, userId);
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", workflowId));
     }
 
     @PostMapping("/workflows/{id}/run")
     @ResponseStatus(HttpStatus.CREATED)
-    public ApiEnvelope<WorkflowExecutionItem> run(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<WorkflowExecutionItem> run(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        workflow(workflowId);
+        workflow(workflowId, userId);
         WorkflowExecutionItem execution = workflowRuntimeService.startWorkflowExecution(workflowId, "MANUAL", "Manual run", Map.of(), resolveCorrelationId(request));
         return ResponseFactory.success(request, execution);
     }
 
     @GetMapping("/workflows/{id}/executions")
-    public ApiEnvelope<List<WorkflowExecutionItem>> executions(@PathVariable UUID id, HttpServletRequest request) {
+    public ApiEnvelope<List<WorkflowExecutionItem>> executions(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        workflow(id.toString(), currentUserId(authentication));
         return ResponseFactory.success(request, workflowRuntimeService.listExecutions(id.toString()));
     }
 
@@ -192,8 +203,8 @@ public class WorkflowController {
     }
 
     @GetMapping("/integrations")
-    public ApiEnvelope<List<IntegrationItem>> listIntegrations(HttpServletRequest request) {
-        String userId = resolveFirstActiveUserId();
+    public ApiEnvelope<List<IntegrationItem>> listIntegrations(JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         if (userId == null) {
             return ResponseFactory.success(request, DEFAULT_PROVIDERS.stream()
                 .map(provider -> new IntegrationItem(provider, "DISCONNECTED", defaultAuthType(provider), null, false))
@@ -219,8 +230,8 @@ public class WorkflowController {
 
     @PostMapping("/integrations/{provider}/connect")
     @Transactional
-    public ApiEnvelope<IntegrationItem> connect(@PathVariable @AllowedValues(values = {"Gmail", "Outlook", "Slack", "Google Drive", "Webhook"}, allowNull = false) String provider, @RequestBody(required = false) Map<String, Object> payload, HttpServletRequest request) {
-        String userId = defaultUserId();
+    public ApiEnvelope<IntegrationItem> connect(@PathVariable @AllowedValues(values = {"Gmail", "Outlook", "Slack", "Google Drive", "Webhook"}, allowNull = false) String provider, @RequestBody(required = false) Map<String, Object> payload, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         String normalizedProvider = canonicalProvider(provider);
         Map<String, Object> config = new LinkedHashMap<>(payload == null ? Map.of() : payload);
         String authType = String.valueOf(config.getOrDefault("authType", defaultAuthType(normalizedProvider)));
@@ -238,8 +249,8 @@ public class WorkflowController {
 
     @PostMapping("/integrations/{provider}/disconnect")
     @Transactional
-    public ApiEnvelope<IntegrationItem> disconnect(@PathVariable @AllowedValues(values = {"Gmail", "Outlook", "Slack", "Google Drive", "Webhook"}, allowNull = false) String provider, HttpServletRequest request) {
-        String userId = defaultUserId();
+    public ApiEnvelope<IntegrationItem> disconnect(@PathVariable @AllowedValues(values = {"Gmail", "Outlook", "Slack", "Google Drive", "Webhook"}, allowNull = false) String provider, JwtAuthenticationToken authentication, HttpServletRequest request) {
+        String userId = currentUserId(authentication);
         String normalizedProvider = canonicalProvider(provider);
         requireJdbc().update(
             "UPDATE aieap.integrations SET status = 'DISCONNECTED', disconnected_at = NOW(), connected_at = NULL, updated_at = NOW() WHERE user_id = ?::uuid AND provider = ?",
@@ -262,9 +273,9 @@ public class WorkflowController {
         return ResponseFactory.success(request, receipt);
     }
 
-    private WorkflowItem workflow(String id) {
+    private WorkflowItem workflow(String id, String userId) {
         List<WorkflowItem> rows = requireJdbc().query(
-            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE id = ?::uuid",
+            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE id = ?::uuid AND owner_user_id = ?::uuid",
             (rs, rowNum) -> new WorkflowItem(
                 rs.getString("id"),
                 rs.getString("name"),
@@ -273,7 +284,8 @@ public class WorkflowController {
                 rs.getObject("created_at", OffsetDateTime.class),
                 loadWorkflowTriggers(rs.getString("id"))
             ),
-            id
+            id,
+            userId
         );
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
@@ -281,9 +293,9 @@ public class WorkflowController {
         return rows.getFirst();
     }
 
-    private List<WorkflowItem> loadWorkflows() {
+    private List<WorkflowItem> loadWorkflows(String userId) {
         return requireJdbc().query(
-            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows ORDER BY created_at DESC",
+            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE owner_user_id = ?::uuid ORDER BY created_at DESC",
             (rs, rowNum) -> new WorkflowItem(
                 rs.getString("id"),
                 rs.getString("name"),
@@ -291,7 +303,8 @@ public class WorkflowController {
                 loadWorkflowSteps(rs.getString("id")),
                 rs.getObject("created_at", OffsetDateTime.class),
                 loadWorkflowTriggers(rs.getString("id"))
-            )
+            ),
+            userId
         );
     }
 
@@ -393,7 +406,7 @@ public class WorkflowController {
             .toList();
     }
 
-    private void publishWorkflowStateChangeIfNeeded(WorkflowItem before, WorkflowItem after, String normalizedStatus, HttpServletRequest request) {
+    private void publishWorkflowStateChangeIfNeeded(WorkflowItem before, WorkflowItem after, String normalizedStatus, HttpServletRequest request, String userId) {
         if (normalizedStatus == null || kafkaEventPublisher == null || before.status().equals(after.status())) {
             return;
         }
@@ -404,7 +417,7 @@ public class WorkflowController {
             new WorkflowStateChangedEvent(
                 UUID.randomUUID().toString(),
                 correlationId,
-                resolveFirstActiveUserId(),
+                userId,
                 after.id(),
                 after.name(),
                 before.status(),
@@ -492,19 +505,15 @@ public class WorkflowController {
         return value.trim();
     }
 
-    private String defaultUserId() {
-        String userId = resolveFirstActiveUserId();
-        if (userId == null) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "No active user available for workflow integrations");
+    private String currentUserId(JwtAuthenticationToken authentication) {
+        if (authentication == null || authentication.getToken() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+        }
+        String userId = authentication.getToken().getClaimAsString("userId");
+        if (userId == null || userId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
         }
         return userId;
-    }
-
-    private String resolveFirstActiveUserId() {
-        return requireJdbc().query(
-            "SELECT id::text AS id FROM aieap.users WHERE status = 'ACTIVE' ORDER BY created_at LIMIT 1",
-            rs -> rs.next() ? rs.getString("id") : null
-        );
     }
 
     private String resolveCorrelationId(HttpServletRequest request) {

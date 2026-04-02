@@ -31,7 +31,8 @@ class MigrationScriptsTest {
             "V4__workflow_enhancements.sql",
             "V5__chat_persistence.sql",
             "V6__seed_prompt_templates.sql",
-            "V7__user_code_identity.sql"
+            "V7__user_code_identity.sql",
+            "V8__email_owner_isolation.sql"
         ), fileNames);
     }
 }
