@@ -128,6 +128,7 @@ public class TaskController {
         );
         TaskItem task = task(id, userId);
         publishTaskCreatedEvent(task, request.getHeader("X-Correlation-ID"));
+        createTaskNotificationFallback(task, userId, request.getHeader("X-Correlation-ID"));
         return ResponseFactory.success(request, task);
     }
 
@@ -352,6 +353,28 @@ public class TaskController {
                 java.time.OffsetDateTime.now().toString()
             ),
             correlationId
+        );
+    }
+
+    private void createTaskNotificationFallback(TaskItem task, String actorUserId, String incomingCorrelationId) {
+        if (jdbcTemplate == null || task == null || task.assigneeUserId() == null || task.assigneeUserId().isBlank()) {
+            return;
+        }
+
+        String correlationId = (incomingCorrelationId != null && !incomingCorrelationId.isBlank())
+            ? incomingCorrelationId
+            : UUID.randomUUID().toString();
+        String message = "Priority: " + task.priority() + " | Source: " + task.source()
+            + (task.dueAt() != null ? " | Due: " + task.dueAt() : "");
+
+        jdbcTemplate.update(
+            "INSERT INTO aieap.notifications (id, user_id, channel, notification_type, title, message, status, metadata_json, created_at) " +
+            "VALUES (?::uuid, ?::uuid, 'IN_APP', 'TASK_CREATED', ?, ?, 'UNREAD', ?::jsonb, NOW())",
+            UUID.randomUUID().toString(),
+            task.assigneeUserId(),
+            "New task: " + task.title(),
+            message,
+            toJson(Map.of("correlationId", correlationId, "fallback", "true", "actorUserId", actorUserId))
         );
     }
 

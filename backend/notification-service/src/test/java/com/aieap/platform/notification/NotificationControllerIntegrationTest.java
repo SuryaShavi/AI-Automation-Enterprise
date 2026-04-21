@@ -12,10 +12,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import java.util.regex.Pattern;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.config.KafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpoint;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.TopicPartitionOffset;
 import org.springframework.test.web.servlet.MockMvc;
+import org.mockito.Mockito;
 
 @SpringBootTest(
     classes = NotificationServiceApplication.class,
@@ -29,6 +38,7 @@ import org.springframework.test.web.servlet.MockMvc;
             "org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration"
     }
 )
+@Import(NotificationControllerIntegrationTest.KafkaTestConfiguration.class)
 @AutoConfigureMockMvc
 class NotificationControllerIntegrationTest {
 
@@ -41,6 +51,35 @@ class NotificationControllerIntegrationTest {
     @MockBean
     private KafkaTemplate<String, Object> kafkaTemplate;
 
+    @TestConfiguration
+    static class KafkaTestConfiguration {
+
+        @Bean(name = "kafkaListenerContainerFactory")
+        public KafkaListenerContainerFactory<MessageListenerContainer> kafkaListenerContainerFactory() {
+            return new KafkaListenerContainerFactory<>() {
+                @Override
+                public MessageListenerContainer createListenerContainer(KafkaListenerEndpoint endpoint) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(String... topics) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(Pattern topicPattern) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(TopicPartitionOffset... topicPartitions) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+            };
+        }
+    }
+
     @Test
     void listRequiresAuthentication() throws Exception {
         mockMvc.perform(get("/notifications"))
@@ -51,7 +90,7 @@ class NotificationControllerIntegrationTest {
     void markAllReadReturnsSuccessEnvelope() throws Exception {
         when(jdbcTemplate.update(anyString())).thenReturn(3);
 
-        mockMvc.perform(patch("/notifications/read-all").with(jwt()))
+        mockMvc.perform(patch("/notifications/read-all").with(jwt().jwt(jwt -> jwt.claim("userId", "11111111-1111-1111-1111-111111111111"))))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.status").value("all-read"));
     }

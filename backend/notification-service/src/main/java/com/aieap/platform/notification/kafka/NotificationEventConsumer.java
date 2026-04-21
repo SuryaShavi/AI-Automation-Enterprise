@@ -40,7 +40,7 @@ public class NotificationEventConsumer {
     // -------------------------------------------------------------------------
     // task.created
     // -------------------------------------------------------------------------
-    @KafkaListener(topics = "task.created", groupId = "notification-service")
+    @KafkaListener(topics = "task.created", groupId = "notification-service-task-created")
     public void onTaskCreated(
         @Payload Map<String, Object> event,
         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
@@ -77,7 +77,7 @@ public class NotificationEventConsumer {
     // -------------------------------------------------------------------------
     // task.status_changed
     // -------------------------------------------------------------------------
-    @KafkaListener(topics = "task.status_changed", groupId = "notification-service")
+    @KafkaListener(topics = "task.status_changed", groupId = "notification-service-task-status")
     public void onTaskStatusChanged(
         @Payload Map<String, Object> event,
         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
@@ -105,7 +105,7 @@ public class NotificationEventConsumer {
     // -------------------------------------------------------------------------
     // new.email.ingested
     // -------------------------------------------------------------------------
-    @KafkaListener(topics = "new.email.ingested", groupId = "notification-service")
+    @KafkaListener(topics = "new.email.ingested", groupId = "notification-service-email")
     public void onEmailIngested(
         @Payload Map<String, Object> event,
         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
@@ -132,7 +132,7 @@ public class NotificationEventConsumer {
     // -------------------------------------------------------------------------
     // report.generated
     // -------------------------------------------------------------------------
-    @KafkaListener(topics = "report.generated", groupId = "notification-service")
+    @KafkaListener(topics = "report.generated", groupId = "notification-service-report")
     public void onReportGenerated(
         @Payload Map<String, Object> event,
         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
@@ -158,7 +158,7 @@ public class NotificationEventConsumer {
     // -------------------------------------------------------------------------
     // workflow.state_changed
     // -------------------------------------------------------------------------
-    @KafkaListener(topics = "workflow.state_changed", groupId = "notification-service")
+    @KafkaListener(topics = "workflow.state_changed", groupId = "notification-service-workflow")
     public void onWorkflowStateChanged(
         @Payload Map<String, Object> event,
         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,

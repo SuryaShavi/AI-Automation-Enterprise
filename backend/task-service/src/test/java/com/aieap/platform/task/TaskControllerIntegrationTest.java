@@ -11,10 +11,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
+import java.util.regex.Pattern;
+import org.springframework.kafka.config.KafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpoint;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.TopicPartitionOffset;
 import org.springframework.test.web.servlet.MockMvc;
+import org.mockito.Mockito;
 
 @SpringBootTest(
     classes = TaskServiceApplication.class,
@@ -28,6 +37,7 @@ import org.springframework.test.web.servlet.MockMvc;
             "org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration"
     }
 )
+@Import(TaskControllerIntegrationTest.KafkaTestConfiguration.class)
 @AutoConfigureMockMvc
 class TaskControllerIntegrationTest {
 
@@ -42,6 +52,35 @@ class TaskControllerIntegrationTest {
 
     @MockBean
     private KafkaTemplate<String, Object> kafkaTemplate;
+
+    @TestConfiguration
+    static class KafkaTestConfiguration {
+
+        @Bean(name = "kafkaListenerContainerFactory")
+        public KafkaListenerContainerFactory<MessageListenerContainer> kafkaListenerContainerFactory() {
+            return new KafkaListenerContainerFactory<>() {
+                @Override
+                public MessageListenerContainer createListenerContainer(KafkaListenerEndpoint endpoint) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(Pattern topicPattern) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(String... topics) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+
+                @Override
+                public MessageListenerContainer createContainer(TopicPartitionOffset... topicPartitions) {
+                    return Mockito.mock(MessageListenerContainer.class);
+                }
+            };
+        }
+    }
 
     @Test
     void listRequiresAuthentication() throws Exception {
