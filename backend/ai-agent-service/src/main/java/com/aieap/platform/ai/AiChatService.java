@@ -1,6 +1,9 @@
 package com.aieap.platform.ai;
 
 import com.aieap.platform.ai.service.PromptTemplateService;
+import com.aieap.platform.ai.service.AiEmailAgentService;
+import com.aieap.platform.ai.service.AiReportAgentService;
+import com.aieap.platform.ai.service.AiTaskAgentService;
 import com.aieap.platform.common.ai.AiProviderProperties;
 import com.aieap.platform.common.ai.LlmClient;
 import com.aieap.platform.common.ai.TokenEstimator;
@@ -68,11 +71,12 @@ public class AiChatService {
         this.qdrantVectorStoreClient = qdrantVectorStoreClient;
     }
 
-    public ChatResult answer(
+public ChatResult answer(
         String mode,
         String prompt,
         List<String> attachments,
-        List<AiController.ChatMessage> messageHistory
+        List<AiController.ChatMessage> messageHistory,
+        java.util.UUID userId
     ) {
         List<String> guardrails = new ArrayList<>();
         guardrails.add("guardrail:no-sensitive-data-leak");
@@ -313,7 +317,7 @@ public class AiChatService {
 
     private String extractTaskSignals(String prompt) {
         if (prompt == null || prompt.isBlank()) {
-            return "No task-like content found.";
+            return "";
         }
 
         String normalized = prompt.replaceAll("\\s+", " ").trim();
@@ -322,7 +326,7 @@ public class AiChatService {
 
         return "- candidate_task: " + normalized + "\n" +
             "- due_hint: " + due + "\n" +
-            "- follow_up: confirm owner, due date, and acceptance criteria";
+            "";
     }
 
     private String buildReportOutline(String mode, List<AiController.ChatMessage> messageHistory) {

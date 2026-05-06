@@ -83,11 +83,12 @@ public class AiController {
         chatPersistenceService.addMessage(session.getId(), "user", prompt, "[]");
 
         // Get AI response
-        AiChatService.ChatResult chatResult = aiChatService.answer(
+AiChatService.ChatResult chatResult = aiChatService.answer(
             chatRequest.mode(),
             prompt,
             chatRequest.attachments(),
-            messageHistory
+            messageHistory,
+            userId
         );
 
         // Save assistant message
