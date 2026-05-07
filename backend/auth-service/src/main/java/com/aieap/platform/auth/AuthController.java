@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
@@ -174,6 +175,7 @@ public class AuthController {
     }
 
     @GetMapping("/users/by-code/{userCode}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ApiEnvelope<UserProfile> userByCode(@PathVariable long userCode,
                                                 JwtAuthenticationToken authentication,
                                                 HttpServletRequest servletRequest) {
@@ -342,8 +344,8 @@ public class AuthController {
 
         String normalized = role.trim().toUpperCase();
         return switch (normalized) {
-            case "ADMIN" -> "ADMIN";
             case "EMPLOYEE", "USER" -> "EMPLOYEE";
+            case "ADMIN" -> throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin accounts must be provisioned by an existing administrator");
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role must be ADMIN or USER");
         };
     }

@@ -8,6 +8,7 @@ import java.util.List;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -123,6 +124,19 @@ public class GlobalExceptionHandler {
             ResponseFactory.traceId(request),
             null,
             new ApiError(status.name(), exception.getReason(), List.of())
+        ));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiEnvelope<Void>> handleAccessDenied(
+        AccessDeniedException exception,
+        HttpServletRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiEnvelope<>(
+            Instant.now(),
+            ResponseFactory.traceId(request),
+            null,
+            new ApiError("FORBIDDEN", "Access denied", List.of())
         ));
     }
 

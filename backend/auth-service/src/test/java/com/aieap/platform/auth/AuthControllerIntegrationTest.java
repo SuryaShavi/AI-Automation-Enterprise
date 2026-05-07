@@ -87,13 +87,7 @@ class AuthControllerIntegrationTest {
     }
 
     @Test
-    void registerAdminUsesAdminUserCodeSequence() throws Exception {
-        when(jdbcTemplate.queryForObject(contains("COUNT(*) FROM aieap.users WHERE email = ?"), eq(Integer.class), eq("admin.user@example.com")))
-            .thenReturn(0);
-        when(jdbcTemplate.queryForObject(contains("SELECT aieap.next_user_code(?)"), eq(Long.class), eq(true)))
-            .thenReturn(2560000L);
-        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
-
+    void publicRegisterRejectsAdminRole() throws Exception {
         mockMvc.perform(post("/auth/register")
                 .contentType(APPLICATION_JSON)
                 .content("""
@@ -105,8 +99,6 @@ class AuthControllerIntegrationTest {
                       \"password\": \"Password12\"
                     }
                     """))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.data.user.id").isNotEmpty())
-            .andExpect(jsonPath("$.data.user.userCode").value(2560000));
+            .andExpect(status().isForbidden());
     }
 }

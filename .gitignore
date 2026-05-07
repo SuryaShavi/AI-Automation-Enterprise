@@ -78,7 +78,7 @@ INTEGRATION_REVIEW.*
 README.*
 ATTRIBUTIONS.*
 AUDIT_REPORT.*
-
+TODO.*
 
 # Maven build folders
 target/

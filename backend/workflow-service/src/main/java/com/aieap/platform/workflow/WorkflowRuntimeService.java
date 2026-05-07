@@ -20,9 +20,11 @@ import java.util.Map;
 import java.util.UUID;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import com.aieap.platform.workflow.kafka.KafkaEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,6 +40,9 @@ public class WorkflowRuntimeService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final TaskExecutor taskExecutor;
+
+    @Autowired(required = false)
+    private KafkaEventPublisher kafkaEventPublisher;
 
     public WorkflowRuntimeService(
         JdbcTemplate jdbcTemplate,
@@ -195,10 +200,19 @@ public class WorkflowRuntimeService {
                 OffsetDateTime stepStartedAt = OffsetDateTime.now(ZoneOffset.UTC);
                 stepStates.set(index, stepState(index, workflow.steps().get(index), "RUNNING", stepStartedAt, null, "Running"));
                 updateExecution(executionId, "RUNNING", null, 0, buildResultPayload(triggerType, triggerLabel, correlationId, payload, stepStates, index));
+
+                // Step-driven task lifecycle integration
+                // If payload contains taskId, update task status according to step progress and emit task.status_changed.
+                maybeUpdateTaskStatusFromWorkflowStep(payload, correlationId, workflow.steps().get(index), index, workflow.steps().size());
+
                 Thread.sleep(200L);
+
                 OffsetDateTime stepCompletedAt = OffsetDateTime.now(ZoneOffset.UTC);
                 stepStates.set(index, stepState(index, workflow.steps().get(index), "COMPLETED", stepStartedAt, stepCompletedAt, "Completed"));
                 updateExecution(executionId, "RUNNING", null, 0, buildResultPayload(triggerType, triggerLabel, correlationId, payload, stepStates, index));
+
+                // Mark task status again on completion to ensure notifications reflect final state of this step.
+                maybeUpdateTaskStatusFromWorkflowStep(payload, correlationId, workflow.steps().get(index), index, workflow.steps().size());
             }
 
             OffsetDateTime completedAt = OffsetDateTime.now(ZoneOffset.UTC);
@@ -217,6 +231,108 @@ public class WorkflowRuntimeService {
             log.error("Workflow execution {} failed", executionId, exception);
             markExecutionFailed(executionId, triggerType, triggerLabel, payload, correlationId, stepStates, startedAt, exception.getMessage());
         }
+    }
+
+    private void maybeUpdateTaskStatusFromWorkflowStep(
+        Map<String, Object> payload,
+        String correlationId,
+        String stepName,
+        int currentStepIndex,
+        int stepCount
+    ) {
+        if (payload == null || payload.isEmpty()) {
+            return;
+        }
+
+        Object rawTaskId = payload.get("taskId");
+        if (rawTaskId == null) {
+            return;
+        }
+
+        String taskId = String.valueOf(rawTaskId);
+        if (taskId.isBlank()) {
+            return;
+        }
+
+        String assigneeUserId = payload.get("assigneeUserId") == null ? null : String.valueOf(payload.get("assigneeUserId"));
+        String title = payload.get("title") == null ? "Task" : String.valueOf(payload.get("title"));
+
+        String previousStatus = readTaskStatus(taskId);
+        if (previousStatus == null) {
+            return;
+        }
+
+        String computedStatus = computeTaskStatusFromWorkflowStep(currentStepIndex, stepCount);
+        if (computedStatus == null || computedStatus.equalsIgnoreCase(previousStatus)) {
+            return;
+        }
+
+        updateTaskStatus(taskId, computedStatus);
+        publishTaskStatusChangedEvent(correlationId, taskId, assigneeUserId, title, previousStatus, computedStatus, stepName);
+    }
+
+    private String computeTaskStatusFromWorkflowStep(int currentStepIndex, int stepCount) {
+        if (stepCount <= 0) {
+            return null;
+        }
+        if (currentStepIndex >= stepCount - 1) {
+            return "COMPLETED";
+        }
+        return "IN_PROGRESS";
+    }
+
+    private String readTaskStatus(String taskId) {
+        try {
+            List<String> rows = jdbcTemplate.query(
+                "SELECT status FROM aieap.tasks WHERE id = ?::uuid",
+                (rs, rowNum) -> rs.getString(1),
+                taskId
+            );
+            return rows.isEmpty() ? null : rows.get(0);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private void updateTaskStatus(String taskId, String newStatus) {
+        jdbcTemplate.update(
+            "UPDATE aieap.tasks SET status = ?, updated_at = NOW() WHERE id = ?::uuid",
+            newStatus,
+            taskId
+        );
+    }
+
+    private void publishTaskStatusChangedEvent(
+        String correlationId,
+        String taskId,
+        String assigneeUserId,
+        String title,
+        String previousStatus,
+        String newStatus,
+        String stepName
+    ) {
+        if (kafkaEventPublisher == null) {
+            return;
+        }
+
+        String cid = (correlationId == null || correlationId.isBlank()) ? UUID.randomUUID().toString() : correlationId;
+        kafkaEventPublisher.publish(
+            "task.status_changed",
+            taskId,
+            Map.of(
+                "eventId", UUID.randomUUID().toString(),
+                "correlationId", cid,
+                "taskId", taskId,
+                "assigneeUserId", assigneeUserId == null ? "" : assigneeUserId,
+                "title", title == null ? "Task" : title,
+                "previousStatus", previousStatus,
+                "newStatus", newStatus,
+                "stepName", stepName == null ? "" : stepName,
+                "source", "workflow-service",
+                "changedAt", OffsetDateTime.now(ZoneOffset.UTC).toString()
+            ),
+            cid
+        );
     }
 
     private void markExecutionFailed(

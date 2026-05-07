@@ -31,6 +31,7 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.transaction.annotation.Transactional;
@@ -77,7 +78,8 @@ public class TaskController {
         HttpServletRequest request
     ) {
         String userId = currentUserId(authentication);
-        List<TaskItem> filtered = loadTasks(userId).stream()
+        boolean admin = isAdmin(authentication);
+        List<TaskItem> filtered = loadTasks(userId, admin).stream()
             .filter(task -> status == null || task.status().equalsIgnoreCase(status))
             .filter(task -> priority == null || task.priority().equalsIgnoreCase(priority))
             .sorted(resolveComparator(sort))
@@ -102,6 +104,7 @@ public class TaskController {
     ) {
         JdbcTemplate db = requireJdbc();
         String userId = currentUserId(authentication);
+        boolean admin = isAdmin(authentication);
         String id = idempotencyKey == null
             ? UUID.randomUUID().toString()
             : UUID.nameUUIDFromBytes(idempotencyKey.getBytes()).toString();
@@ -112,6 +115,11 @@ public class TaskController {
         String source = createTaskRequest.source() == null ? "manual" : createTaskRequest.source();
         String metadataJson = toJson(Map.of("source", source));
 
+        String requestedAssignee = parseUuidOrNull(createTaskRequest.assigneeUserId());
+        if (!admin && requestedAssignee != null && !requestedAssignee.equals(userId)) {
+            throw new AccessDeniedException("Employees can only create tasks for themselves");
+        }
+
         db.update(
             "INSERT INTO aieap.tasks (id, source_email_id, title, description, assignee_user_id, created_by_user_id, priority, status, due_at, metadata_json, created_at, updated_at) " +
             "VALUES (?::uuid, ?::uuid, ?, ?, ?::uuid, ?::uuid, ?, 'PENDING', ?, ?::jsonb, NOW(), NOW()) " +
@@ -120,13 +128,13 @@ public class TaskController {
             parseUuidOrNull(source),
             InputSanitizer.requiredText(createTaskRequest.title()),
             InputSanitizer.nullableText(createTaskRequest.description()),
-            parseUuidOrNull(createTaskRequest.assigneeUserId()) == null ? userId : parseUuidOrNull(createTaskRequest.assigneeUserId()),
+            requestedAssignee == null ? userId : requestedAssignee,
             userId,
             priority,
             dueAt,
             metadataJson
         );
-        TaskItem task = task(id, userId);
+        TaskItem task = task(id, userId, admin);
         publishTaskCreatedEvent(task, request.getHeader("X-Correlation-ID"));
         createTaskNotificationFallback(task, userId, request.getHeader("X-Correlation-ID"));
         return ResponseFactory.success(request, task);
@@ -143,7 +151,11 @@ public class TaskController {
     ) {
         String taskId = id.toString();
         String userId = currentUserId(authentication);
-        TaskItem existing = task(taskId, userId);
+        boolean admin = isAdmin(authentication);
+        TaskItem existing = task(taskId, userId, admin);
+        if (!admin && updateTaskRequest.assigneeUserId() != null && !updateTaskRequest.assigneeUserId().equals(userId)) {
+            throw new AccessDeniedException("Employees can only assign tasks to themselves");
+        }
         String updatedPriority = updateTaskRequest.priority() == null
             ? existing.priority()
             : updateTaskRequest.priority().toUpperCase();
@@ -183,13 +195,17 @@ public class TaskController {
         String taskId = id.toString();
         String userId = currentUserId(authentication);
         JdbcTemplate db = requireJdbc();
-        db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)", taskId, userId, userId);
+        if (isAdmin(authentication)) {
+            db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid", taskId);
+        } else {
+            db.update("DELETE FROM aieap.tasks WHERE id = ?::uuid AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)", taskId, userId, userId);
+        }
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", taskId));
     }
 
     @GetMapping("/board")
     public ApiEnvelope<TaskBoardResponse> board(JwtAuthenticationToken authentication, HttpServletRequest request) {
-        List<TaskItem> items = loadTasks(currentUserId(authentication));
+        List<TaskItem> items = loadTasks(currentUserId(authentication), isAdmin(authentication));
         List<BoardColumn> columns = List.of(
             new BoardColumn("PENDING", new java.util.ArrayList<>(items.stream().filter(task -> "PENDING".equals(task.status())).toList())),
             new BoardColumn("IN_PROGRESS", new java.util.ArrayList<>(items.stream().filter(task -> "IN_PROGRESS".equals(task.status())).toList())),
@@ -199,10 +215,17 @@ public class TaskController {
     }
 
     private TaskItem task(String id, String userId) {
+        return task(id, userId, false);
+    }
+
+    private TaskItem task(String id, String userId, boolean admin) {
         JdbcTemplate db = requireJdbc();
+        String sql = "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
+            "FROM aieap.tasks WHERE id = ?::uuid" +
+            (admin ? "" : " AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)");
+        Object[] args = admin ? new Object[] { id } : new Object[] { id, userId, userId };
         List<TaskItem> rows = db.query(
-            "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
-            "FROM aieap.tasks WHERE id = ?::uuid AND (created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid)",
+            sql,
             (rs, rowNum) -> mapTask(
                 rs.getString("id"),
                 rs.getString("title"),
@@ -214,9 +237,7 @@ public class TaskController {
                 readOffsetDateTime(rs, "updated_at"),
                 rs.getString("metadata_json")
             ),
-            id,
-            userId,
-            userId
+            args
         );
         TaskItem task = rows.isEmpty() ? null : rows.getFirst();
         if (task == null) {
@@ -225,11 +246,14 @@ public class TaskController {
         return task;
     }
 
-    private List<TaskItem> loadTasks(String userId) {
+    private List<TaskItem> loadTasks(String userId, boolean admin) {
         JdbcTemplate db = requireJdbc();
+        String sql = "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
+            "FROM aieap.tasks" +
+            (admin ? "" : " WHERE created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid");
+        Object[] args = admin ? new Object[] { } : new Object[] { userId, userId };
         return db.query(
-            "SELECT id::text AS id, title, description, assignee_user_id::text AS assignee_user_id, priority, status, due_at, updated_at, metadata_json::text AS metadata_json " +
-                "FROM aieap.tasks WHERE created_by_user_id = ?::uuid OR assignee_user_id = ?::uuid",
+            sql,
             (rs, rowNum) -> mapTask(
                 rs.getString("id"),
                 rs.getString("title"),
@@ -241,8 +265,7 @@ public class TaskController {
                 readOffsetDateTime(rs, "updated_at"),
                 rs.getString("metadata_json")
             ),
-            userId,
-            userId
+            args
         );
     }
 
@@ -255,6 +278,11 @@ public class TaskController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
         }
         return userId;
+    }
+
+    private boolean isAdmin(JwtAuthenticationToken authentication) {
+        return authentication != null && authentication.getAuthorities().stream()
+            .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
     }
 
     private TaskItem mapTask(

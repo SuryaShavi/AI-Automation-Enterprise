@@ -65,6 +65,7 @@ public class PromptTemplateController {
     }
 
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiEnvelope<PromptTemplateService.PromptTemplateDto> createTemplate(
         @Valid @RequestBody CreateTemplateRequest request,
@@ -88,6 +89,7 @@ public class PromptTemplateController {
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ApiEnvelope<PromptTemplateService.PromptTemplateDto> updateTemplate(
         @PathVariable UUID id,
         @Valid @RequestBody UpdateTemplateRequest request,
@@ -106,6 +108,7 @@ public class PromptTemplateController {
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteTemplate(@PathVariable UUID id) {
         promptTemplateService.deleteTemplate(id);

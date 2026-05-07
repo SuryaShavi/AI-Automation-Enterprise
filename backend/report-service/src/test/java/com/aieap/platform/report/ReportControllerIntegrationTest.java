@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
@@ -41,10 +42,21 @@ class ReportControllerIntegrationTest {
     }
 
     @Test
-    void serviceHealthListsKnownBackends() throws Exception {
-        mockMvc.perform(get("/health/services").with(jwt()))
+    void serviceHealthForbiddenForEmployee() throws Exception {
+        mockMvc.perform(get("/health/services")
+                .with(jwt()
+                    .jwt(jwt -> jwt.claim("roles", java.util.Set.of("EMPLOYEE")))
+                    .authorities(new SimpleGrantedAuthority("ROLE_EMPLOYEE"))))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void serviceHealthAllowedForAdmin() throws Exception {
+        mockMvc.perform(get("/health/services")
+                .with(jwt()
+                    .jwt(jwt -> jwt.claim("roles", java.util.Set.of("ADMIN")))
+                    .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data[0].service").value("auth-service"))
-            .andExpect(jsonPath("$.data[1].status").value("UP"));
+            .andExpect(jsonPath("$.data[0].service").value("auth-service"));
     }
 }

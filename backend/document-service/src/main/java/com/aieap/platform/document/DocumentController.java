@@ -139,7 +139,7 @@ public class DocumentController {
             documentIndexingService.indexDocumentAsync(id, chunkIds, processed.chunks());
         }
 
-        DocumentItem document = document(id, ownerUserId);
+        DocumentItem document = document(id, ownerUserId, false);
         if (kafkaEventPublisher != null) {
             String correlationId = request.getHeader("X-Correlation-ID") != null
                 ? request.getHeader("X-Correlation-ID")
@@ -165,7 +165,7 @@ public class DocumentController {
 
     @GetMapping
     public ApiEnvelope<PageEnvelope<DocumentItem>> list(@RequestParam(defaultValue = "0") @Min(0) int page, @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size, JwtAuthenticationToken authentication, HttpServletRequest request) {
-        List<DocumentItem> items = loadDocuments(currentUserId(authentication));
+        List<DocumentItem> items = loadDocuments(currentUserId(authentication), isAdmin(authentication));
         int fromIndex = Math.min(page * size, items.size());
         int toIndex = Math.min(fromIndex + size, items.size());
         List<DocumentItem> pageItems = new ArrayList<>(items.subList(fromIndex, toIndex));
@@ -174,7 +174,7 @@ public class DocumentController {
 
     @GetMapping("/{id}")
     public ApiEnvelope<DocumentItem> get(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
-        return ResponseFactory.success(request, document(id.toString(), currentUserId(authentication)));
+        return ResponseFactory.success(request, document(id.toString(), currentUserId(authentication), isAdmin(authentication)));
     }
 
     @PostMapping("/{id}/ask")
@@ -182,7 +182,7 @@ public class DocumentController {
         String documentId = id.toString();
         String userId = currentUserId(authentication);
         String question = InputSanitizer.requiredText(askDocumentRequest.question());
-        document(documentId, userId);
+        document(documentId, userId, isAdmin(authentication));
         RetrievalResult retrievalResult = loadRelevantChunks(documentId, question, 8);
         List<DocumentChunk> citations = retrievalResult.chunks();
         String answer = documentRagService.answerQuestion(question, citations);
@@ -207,14 +207,17 @@ public class DocumentController {
     @GetMapping("/{id}/chunks")
     public ApiEnvelope<List<DocumentChunk>> getChunks(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String documentId = id.toString();
-        document(documentId, currentUserId(authentication));
+        document(documentId, currentUserId(authentication), isAdmin(authentication));
         return ResponseFactory.success(request, loadChunks(documentId));
     }
 
-    private DocumentItem document(String id, String userId) {
+    private DocumentItem document(String id, String userId, boolean admin) {
         JdbcTemplate db = requireJdbc();
+        String sql = "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE id = ?::uuid" +
+            (admin ? "" : " AND owner_user_id = ?::uuid");
+        Object[] args = admin ? new Object[] { id } : new Object[] { id, userId };
         List<DocumentItem> rows = db.query(
-            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE id = ?::uuid AND owner_user_id = ?::uuid",
+            sql,
             (rs, rowNum) -> new DocumentItem(
                 rs.getString("id"),
                 rs.getString("file_name"),
@@ -224,8 +227,7 @@ public class DocumentController {
                 rs.getString("summary"),
                 readOffsetDateTime(rs, "created_at")
             ),
-            id,
-            userId
+            args
         );
         DocumentItem document = rows.isEmpty() ? null : rows.getFirst();
         if (document == null) {
@@ -233,10 +235,14 @@ public class DocumentController {
         }
         return document;
     }
-    private List<DocumentItem> loadDocuments(String userId) {
+    private List<DocumentItem> loadDocuments(String userId, boolean admin) {
         JdbcTemplate db = requireJdbc();
+        String sql = "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents" +
+            (admin ? "" : " WHERE owner_user_id = ?::uuid") +
+            " ORDER BY created_at DESC";
+        Object[] args = admin ? new Object[] { } : new Object[] { userId };
         return db.query(
-            "SELECT id::text AS id, file_name, file_type, file_size, processing_status, summary, created_at FROM aieap.documents WHERE owner_user_id = ?::uuid ORDER BY created_at DESC",
+            sql,
             (rs, rowNum) -> new DocumentItem(
                 rs.getString("id"),
                 rs.getString("file_name"),
@@ -246,7 +252,7 @@ public class DocumentController {
                 rs.getString("summary"),
                 readOffsetDateTime(rs, "created_at")
             ),
-            userId
+            args
         );
     }
 
@@ -292,6 +298,11 @@ public class DocumentController {
             }
         }
         throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
+    }
+
+    private boolean isAdmin(JwtAuthenticationToken authentication) {
+        return authentication != null && authentication.getAuthorities().stream()
+            .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
     }
 
     private List<DocumentChunk> loadChunks(String documentId) {

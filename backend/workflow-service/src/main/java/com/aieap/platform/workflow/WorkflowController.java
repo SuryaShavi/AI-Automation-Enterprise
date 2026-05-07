@@ -70,10 +70,11 @@ public class WorkflowController {
 
     @GetMapping("/workflows")
     public ApiEnvelope<List<WorkflowItem>> list(JwtAuthenticationToken authentication, HttpServletRequest request) {
-        return ResponseFactory.success(request, loadWorkflows(currentUserId(authentication)));
+        return ResponseFactory.success(request, loadWorkflows(currentUserId(authentication), isAdmin(authentication)));
     }
 
     @PostMapping("/workflows")
+    @PreAuthorize("hasRole('ADMIN')")
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public ApiEnvelope<WorkflowItem> create(
@@ -113,12 +114,13 @@ public class WorkflowController {
     }
 
     @PatchMapping("/workflows/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public ApiEnvelope<WorkflowItem> update(@PathVariable UUID id, @Valid @RequestBody WorkflowUpdateRequest workflowUpdateRequest, JwtAuthenticationToken authentication, HttpServletRequest request) {
         JdbcTemplate db = requireJdbc();
         String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        WorkflowItem before = workflow(workflowId, userId);
+        WorkflowItem before = workflow(workflowId, userId, isAdmin(authentication));
         String normalizedStatus = null;
 
         if (workflowUpdateRequest.status() != null) {
@@ -139,55 +141,65 @@ public class WorkflowController {
             db.update("UPDATE aieap.workflows SET trigger_type = ?, updated_at = NOW() WHERE id = ?::uuid", deriveWorkflowTriggerType(triggers), workflowId);
         }
 
-        WorkflowItem after = workflow(workflowId, userId);
+        WorkflowItem after = workflow(workflowId, userId, isAdmin(authentication));
         publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request, userId);
         return ResponseFactory.success(request, after);
     }
 
     @PatchMapping("/workflows/{id}/status")
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public ApiEnvelope<WorkflowItem> patchStatus(@PathVariable UUID id, @Valid @RequestBody WorkflowStatusRequest workflowStatusRequest, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        WorkflowItem before = workflow(workflowId, userId);
+        WorkflowItem before = workflow(workflowId, userId, isAdmin(authentication));
         String normalizedStatus = normalizeWorkflowStatus(workflowStatusRequest.status(), false);
-        int updated = requireJdbc().update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid AND owner_user_id = ?::uuid", normalizedStatus, workflowId, userId);
+        int updated = isAdmin(authentication)
+            ? requireJdbc().update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid", normalizedStatus, workflowId)
+            : requireJdbc().update("UPDATE aieap.workflows SET status = ?, updated_at = NOW() WHERE id = ?::uuid AND owner_user_id = ?::uuid", normalizedStatus, workflowId, userId);
         if (updated == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
         }
 
-        WorkflowItem after = workflow(workflowId, userId);
+        WorkflowItem after = workflow(workflowId, userId, isAdmin(authentication));
         publishWorkflowStateChangeIfNeeded(before, after, normalizedStatus, request, userId);
         return ResponseFactory.success(request, after);
     }
 
     @DeleteMapping("/workflows/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public ApiEnvelope<Map<String, String>> delete(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        workflow(workflowId, userId);
-        requireJdbc().update("DELETE FROM aieap.workflows WHERE id = ?::uuid AND owner_user_id = ?::uuid", workflowId, userId);
+        workflow(workflowId, userId, isAdmin(authentication));
+        if (isAdmin(authentication)) {
+            requireJdbc().update("DELETE FROM aieap.workflows WHERE id = ?::uuid", workflowId);
+        } else {
+            requireJdbc().update("DELETE FROM aieap.workflows WHERE id = ?::uuid AND owner_user_id = ?::uuid", workflowId, userId);
+        }
         return ResponseFactory.success(request, Map.of("status", "deleted", "id", workflowId));
     }
 
     @PostMapping("/workflows/{id}/run")
+    @PreAuthorize("hasRole('ADMIN')")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiEnvelope<WorkflowExecutionItem> run(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
         String userId = currentUserId(authentication);
         String workflowId = id.toString();
-        workflow(workflowId, userId);
+        workflow(workflowId, userId, isAdmin(authentication));
         WorkflowExecutionItem execution = workflowRuntimeService.startWorkflowExecution(workflowId, "MANUAL", "Manual run", Map.of(), resolveCorrelationId(request));
         return ResponseFactory.success(request, execution);
     }
 
     @GetMapping("/workflows/{id}/executions")
     public ApiEnvelope<List<WorkflowExecutionItem>> executions(@PathVariable UUID id, JwtAuthenticationToken authentication, HttpServletRequest request) {
-        workflow(id.toString(), currentUserId(authentication));
+        workflow(id.toString(), currentUserId(authentication), isAdmin(authentication));
         return ResponseFactory.success(request, workflowRuntimeService.listExecutions(id.toString()));
     }
 
     @PostMapping("/workflows/events")
+    @PreAuthorize("hasRole('ADMIN')")
     public ApiEnvelope<Map<String, Object>> ingestEvent(@Valid @RequestBody WorkflowEventRequest workflowEventRequest, HttpServletRequest request) {
         int executionsStarted = workflowRuntimeService.processEvent(
             workflowEventRequest.eventType(),
@@ -274,8 +286,15 @@ public class WorkflowController {
     }
 
     private WorkflowItem workflow(String id, String userId) {
+        return workflow(id, userId, false);
+    }
+
+    private WorkflowItem workflow(String id, String userId, boolean admin) {
+        String sql = "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE id = ?::uuid" +
+            (admin ? "" : " AND owner_user_id = ?::uuid");
+        Object[] args = admin ? new Object[] { id } : new Object[] { id, userId };
         List<WorkflowItem> rows = requireJdbc().query(
-            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE id = ?::uuid AND owner_user_id = ?::uuid",
+            sql,
             (rs, rowNum) -> new WorkflowItem(
                 rs.getString("id"),
                 rs.getString("name"),
@@ -284,8 +303,7 @@ public class WorkflowController {
                 rs.getObject("created_at", OffsetDateTime.class),
                 loadWorkflowTriggers(rs.getString("id"))
             ),
-            id,
-            userId
+            args
         );
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
@@ -293,9 +311,13 @@ public class WorkflowController {
         return rows.getFirst();
     }
 
-    private List<WorkflowItem> loadWorkflows(String userId) {
+    private List<WorkflowItem> loadWorkflows(String userId, boolean admin) {
+        String sql = "SELECT id::text AS id, name, status, created_at FROM aieap.workflows" +
+            (admin ? "" : " WHERE owner_user_id = ?::uuid") +
+            " ORDER BY created_at DESC";
+        Object[] args = admin ? new Object[] { } : new Object[] { userId };
         return requireJdbc().query(
-            "SELECT id::text AS id, name, status, created_at FROM aieap.workflows WHERE owner_user_id = ?::uuid ORDER BY created_at DESC",
+            sql,
             (rs, rowNum) -> new WorkflowItem(
                 rs.getString("id"),
                 rs.getString("name"),
@@ -304,7 +326,7 @@ public class WorkflowController {
                 rs.getObject("created_at", OffsetDateTime.class),
                 loadWorkflowTriggers(rs.getString("id"))
             ),
-            userId
+            args
         );
     }
 
@@ -514,6 +536,11 @@ public class WorkflowController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User context not found");
         }
         return userId;
+    }
+
+    private boolean isAdmin(JwtAuthenticationToken authentication) {
+        return authentication != null && authentication.getAuthorities().stream()
+            .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
     }
 
     private String resolveCorrelationId(HttpServletRequest request) {
