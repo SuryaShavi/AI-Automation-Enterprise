@@ -79,6 +79,7 @@ README.*
 ATTRIBUTIONS.*
 AUDIT_REPORT.*
 TODO.*
+TODO_*
 
 # Maven build folders
 target/
