@@ -80,6 +80,9 @@ ATTRIBUTIONS.*
 AUDIT_REPORT.*
 TODO.*
 TODO_*
+test-*
+final-*
+
 
 # Maven build folders
 target/

@@ -12,8 +12,9 @@ ALTER TABLE aieap.users
     ADD COLUMN IF NOT EXISTS user_code BIGINT;
 
 WITH role_map AS (
-    SELECT u.id,
-           COALESCE(BOOL_OR(r.code = 'ADMIN'), FALSE) AS is_admin
+    SELECT
+        u.id,
+        COALESCE(BOOL_OR(r.code = 'ADMIN'), FALSE) AS is_admin
     FROM aieap.users u
     LEFT JOIN aieap.user_roles ur ON ur.user_id = u.id
     LEFT JOIN aieap.roles r ON r.id = ur.role_id
@@ -21,12 +22,24 @@ WITH role_map AS (
 )
 UPDATE aieap.users u
 SET user_code = CASE
-    WHEN role_map.is_admin THEN nextval('aieap.admin_user_code_seq')
+    WHEN role_map.is_admin
+        THEN nextval('aieap.admin_user_code_seq')
     ELSE nextval('aieap.employee_user_code_seq')
 END
 FROM role_map
 WHERE u.id = role_map.id
   AND u.user_code IS NULL;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM aieap.users
+        WHERE user_code IS NULL
+    ) THEN
+        RAISE EXCEPTION 'Cannot enforce NOT NULL because some user_code values are still NULL';
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -44,7 +57,8 @@ END $$;
 ALTER TABLE aieap.users
     ALTER COLUMN user_code SET NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_users_user_code ON aieap.users(user_code);
+CREATE INDEX IF NOT EXISTS idx_users_user_code
+    ON aieap.users(user_code);
 
 CREATE OR REPLACE FUNCTION aieap.next_user_code(is_admin BOOLEAN)
 RETURNS BIGINT
@@ -72,10 +86,12 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_users_prevent_user_code_update ON aieap.users;
+DROP TRIGGER IF EXISTS trg_users_prevent_user_code_update
+    ON aieap.users;
 
 CREATE TRIGGER trg_users_prevent_user_code_update
-    BEFORE UPDATE OF user_code ON aieap.users
+    BEFORE UPDATE OF user_code
+    ON aieap.users
     FOR EACH ROW
     EXECUTE FUNCTION aieap.prevent_user_code_update();
 
