@@ -1,5 +1,6 @@
 package com.aieap.platform.ai.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -36,9 +37,11 @@ public class ChatSession {
     @Column(columnDefinition = "jsonb", name = "context_metadata")
     private String contextMetadata = "{}";
 
+@JsonIgnore
     @OneToMany(mappedBy = "chatSession", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<ChatMessage> messages = new ArrayList<>();
 
+    @JsonIgnore
     @OneToMany(mappedBy = "chatSession", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<ChatAttachment> attachments = new ArrayList<>();
 

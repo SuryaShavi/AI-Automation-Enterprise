@@ -1,5 +1,6 @@
 package com.aieap.platform.ai.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -19,6 +20,7 @@ public class ChatAttachment {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+@JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "chat_session_id", nullable = false)
     private ChatSession chatSession;

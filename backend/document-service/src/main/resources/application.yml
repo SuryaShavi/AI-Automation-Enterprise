@@ -30,8 +30,20 @@ spring:
         '[spring.json.add.type.headers]': 'false'
 
 springdoc:
+  api-docs:
+    path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-info:
+    title: Document Management Service API
+    description: API for document storage, versioning, and vector search
+    version: 1.0.0
+    contact:
+      name: AI Enterprise Platform Team
+    license:
+      name: Proprietary
 
 management:
   endpoints:

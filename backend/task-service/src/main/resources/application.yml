@@ -35,8 +35,20 @@ spring:
         '[spring.json.value.default.type]': 'java.util.HashMap'
 
 springdoc:
+  api-docs:
+    path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-info:
+    title: Task Management Service API
+    description: API for task creation, assignment, and workflow management
+    version: 1.0.0
+    contact:
+      name: AI Enterprise Platform Team
+    license:
+      name: Proprietary
 
 management:
   endpoints:

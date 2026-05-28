@@ -21,8 +21,20 @@ spring:
         '[spring.json.add.type.headers]': 'false'
 
 springdoc:
+  api-docs:
+    path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-info:
+    title: Report Generation Service API
+    description: API for report creation, scheduling, and export
+    version: 1.0.0
+    contact:
+      name: AI Enterprise Platform Team
+    license:
+      name: Proprietary
 
 management:
   endpoints:

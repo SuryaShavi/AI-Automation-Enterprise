@@ -96,8 +96,20 @@ spring:
             - Path=/integrations/**
 
 springdoc:
+  api-docs:
+    path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-info:
+    title: API Gateway Service
+    description: Central API gateway for routing and rate limiting
+    version: 1.0.0
+    contact:
+      name: AI Enterprise Platform Team
+    license:
+      name: Proprietary
 
 management:
   endpoints:

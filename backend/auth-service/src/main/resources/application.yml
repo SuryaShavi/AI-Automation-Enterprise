@@ -34,8 +34,20 @@ security:
     refresh-token-ttl-days: ${SECURITY_JWT_REFRESH_TOKEN_TTL_DAYS:14}
 
 springdoc:
+  api-docs:
+    path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-info:
+    title: Authentication Service API
+    description: API for user authentication, JWT token management, and authorization
+    version: 1.0.0
+    contact:
+      name: AI Enterprise Platform Team
+    license:
+      name: Proprietary
 
 management:
   endpoints:
