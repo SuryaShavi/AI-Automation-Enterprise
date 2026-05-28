@@ -13,12 +13,12 @@ import java.util.UUID;
 @Repository
 public interface ChatSessionRepository extends JpaRepository<ChatSession, UUID> {
     
-@Query("SELECT c FROM ChatSession c WHERE c.userId = :userId ORDER BY c.updatedAt DESC")
+    @Query("SELECT c FROM ChatSession c WHERE c.userId = :userId ORDER BY c.updatedAt DESC")
     List<ChatSession> findByUserIdOrderByUpdatedAtDesc(@Param("userId") UUID userId);
     
-@Query("SELECT c FROM ChatSession c WHERE c.userId = :userId AND c.id = :chatId")
+    @Query("SELECT c FROM ChatSession c WHERE c.userId = :userId AND c.id = :chatId")
     Optional<ChatSession> findByIdAndUserId(@Param("chatId") UUID chatId, @Param("userId") UUID userId);
     
-@Query(value = "SELECT c FROM chat_sessions c WHERE c.user_id = :userId ORDER BY c.created_at DESC LIMIT :limit", nativeQuery = true)
+    @Query(value = "SELECT * FROM aieap.chat_sessions c WHERE c.user_id = :userId ORDER BY c.created_at DESC LIMIT :limit", nativeQuery = true)
     List<ChatSession> findRecentByUserId(@Param("userId") UUID userId, @Param("limit") int limit);
 }

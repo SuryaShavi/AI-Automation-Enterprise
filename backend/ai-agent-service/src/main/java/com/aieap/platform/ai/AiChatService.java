@@ -1,5 +1,6 @@
 package com.aieap.platform.ai;
 
+import com.aieap.platform.ai.service.EnterpriseServiceCaller;
 import com.aieap.platform.ai.service.PromptTemplateService;
 import com.aieap.platform.ai.service.AiEmailAgentService;
 import com.aieap.platform.ai.service.AiReportAgentService;
@@ -50,10 +51,13 @@ public class AiChatService {
     private final ObjectMapper objectMapper;
     private final PromptTemplateService promptTemplateService;
     private final AiProviderProperties aiProviderProperties;
-    private final QdrantVectorStoreClient qdrantVectorStoreClient;
+private final QdrantVectorStoreClient qdrantVectorStoreClient;
 
     @Autowired(required = false)
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired(required = false)
+    private EnterpriseServiceCaller enterpriseServiceCaller;
 
     public AiChatService(
         LlmClient llmClient,
@@ -175,10 +179,12 @@ public ChatResult answer(
         }
     }
 
-    private List<ToolCall> planTools(String mode, String prompt, List<String> attachments) {
+private List<ToolCall> planTools(String mode, String prompt, List<String> attachments) {
         String plannerSystemPrompt = "You are a tool planner. " +
             "Return ONLY valid JSON object with shape {\"tools\":[{\"name\":\"...\",\"reason\":\"...\"}]}. " +
-            "Allowed names: document_lookup, task_extraction, report_outline. " +
+            "Allowed names: document_lookup, task_extraction, report_outline, fetch_tasks, fetch_emails, fetch_notifications, fetch_workflows, fetch_reports, fetch_dashboard. " +
+            "For questions about tasks, use fetch_tasks. For emails, use fetch_emails. For notifications use fetch_notifications. " +
+            "For workflow questions use fetch_workflows. For reports use fetch_reports. For general overview use fetch_dashboard. " +
             "Never include text outside JSON.";
 
         String plannerUserPrompt = "Mode: " + safe(mode) + "\n" +
@@ -310,9 +316,11 @@ public ChatResult answer(
         return new GroundingContext(builder.toString().trim(), citations, retrievalMode, true);
     }
 
-    private boolean isAllowedTool(String name) {
+private boolean isAllowedTool(String name) {
         String normalized = name == null ? "" : name.toLowerCase(Locale.ROOT);
-        return normalized.equals("document_lookup") || normalized.equals("task_extraction") || normalized.equals("report_outline");
+        return normalized.equals("document_lookup") || normalized.equals("task_extraction") || normalized.equals("report_outline")
+            || normalized.equals("fetch_tasks") || normalized.equals("fetch_emails") || normalized.equals("fetch_notifications")
+            || normalized.equals("fetch_workflows") || normalized.equals("fetch_reports") || normalized.equals("fetch_dashboard");
     }
 
     private String extractTaskSignals(String prompt) {
